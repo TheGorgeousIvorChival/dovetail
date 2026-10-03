@@ -587,15 +587,6 @@ fn read_head(stream: &mut TcpStream) -> Option<(usize, u8, u8, u32)> {
     Some((len, head[3], head[4], id))
 }
 
-/// One frame payload off the wire.
-fn read_body(stream: &mut TcpStream, len: usize) -> Option<Vec<u8>> {
-    let mut body = vec![0u8; len];
-    if len > 0 {
-        crate::proxy::read_exact(stream, &mut body).ok()?;
-    }
-    Some(body)
-}
-
 /// Write one frame; lengths past the peer's maximum are never constructed.
 fn write_frame(stream: &mut TcpStream, kind: u8, flags: u8, id: u32, body: &[u8]) -> bool {
     let mut head = [0u8; 9];
@@ -678,6 +669,8 @@ pub(crate) struct GrpcReader {
     need: usize,
     /// Decoded application bytes not yet consumed.
     backlog: Vec<u8>,
+    /// Current frame payload, reused across `pump` calls.
+    frame: Vec<u8>,
     /// Whether the peer ended the stream, after which reads report `EOF`.
     eof: bool,
 }
@@ -864,7 +857,7 @@ impl GrpcReader {
                 break;
             }
             let payload = hunk_decode(&self.msg[..self.need])?;
-            self.backlog.extend_from_slice(&payload);
+            self.backlog.extend_from_slice(payload);
             self.msg.drain(..self.need);
             self.need = 0;
         }
@@ -881,11 +874,19 @@ impl GrpcReader {
     fn pump(&mut self) -> Option<()> {
         let head = read_head(&mut self.read);
         let (len, kind, flags, id) = head?;
-        let body = read_body(&mut self.read, len)?;
-        match kind {
-            T_DATA => self.data(id, flags, &body),
-            T_HEADERS => self.head_block(id, flags, &body),
-            T_CONT => self.continue_block(id, flags, &body),
+        // Taken, not borrowed: the handlers below need `&mut self` and the
+        // body at once, which one object cannot lend itself. Restored at every
+        // exit, so the next frame reuses the same allocation.
+        let mut frame = std::mem::take(&mut self.frame);
+        frame.resize(len, 0);
+        if len > 0 && crate::proxy::read_exact(&mut self.read, &mut frame).is_err() {
+            self.frame = frame;
+            return None;
+        }
+        let out = match kind {
+            T_DATA => self.data(id, flags, &frame),
+            T_HEADERS => self.head_block(id, flags, &frame),
+            T_CONT => self.continue_block(id, flags, &frame),
             T_RST => {
                 if id == self.stream {
                     self.eof = true;
@@ -894,18 +895,18 @@ impl GrpcReader {
             }
             T_SETTINGS => {
                 if id == 0 {
-                    self.settings(flags, &body);
+                    self.settings(flags, &frame);
                 }
                 Some(())
             }
             T_PING => {
                 if id == 0 {
-                    self.ping(flags, &body);
+                    self.ping(flags, &frame);
                 }
                 Some(())
             }
             T_WINDOW => {
-                self.window(id, &body);
+                self.window(id, &frame);
                 Some(())
             }
             T_GOAWAY => {
@@ -913,7 +914,9 @@ impl GrpcReader {
                 Some(())
             }
             _ => Some(()),
-        }
+        };
+        self.frame = frame;
+        out
     }
 
     /// Start a header block, decoding it at once when complete.
@@ -1056,12 +1059,15 @@ impl GrpcWriter {
 
 /// Wrap application bytes as one `Hunk` message with its `gRPC` envelope.
 fn hunk_frame(data: &[u8]) -> Vec<u8> {
-    let mut hunk = vec![0x0Au8];
-    push_varint(&mut hunk, data.len() as u64);
-    hunk.extend_from_slice(data);
+    // One buffer, not two: the old form built the hunk in its own `Vec` and
+    // copied it behind a five-zero prefix, so every message paid an allocation
+    // and a full copy for five length bytes.
     let mut out = vec![0u8; 5];
-    out[1..5].copy_from_slice(&(hunk.len() as u32).to_be_bytes());
-    out.extend_from_slice(&hunk);
+    out.push(0x0A);
+    push_varint(&mut out, data.len() as u64);
+    out.extend_from_slice(data);
+    let hunk_len = (out.len() - 5) as u32;
+    out[1..5].copy_from_slice(&hunk_len.to_be_bytes());
     out
 }
 
@@ -1092,7 +1098,9 @@ fn read_varint(msg: &[u8], at: &mut usize) -> Option<u64> {
 }
 
 /// Decode a `Hunk`, keeping the last value of a repeated field like decoders do.
-fn hunk_decode(msg: &[u8]) -> Option<Vec<u8>> {
+/// Field 1 of one hunk message, borrowed: the old owned return copied the
+/// whole message just for the caller to copy it into the backlog again.
+fn hunk_decode(msg: &[u8]) -> Option<&[u8]> {
     let mut at = 0;
     let mut data: &[u8] = &[];
     while at < msg.len() {
@@ -1114,7 +1122,7 @@ fn hunk_decode(msg: &[u8]) -> Option<Vec<u8>> {
             skip_field(msg, &mut at, wire)?;
         }
     }
-    Some(data.to_vec())
+    Some(data)
 }
 
 /// Skip one unknown protobuf field without recursing into groups.
@@ -1183,6 +1191,7 @@ pub(crate) fn accept(stream: TcpStream, path: &str) -> Option<(GrpcReader, GrpcW
         msg: Vec::new(),
         need: 0,
         backlog: Vec::new(),
+        frame: Vec::new(),
         eof: false,
     };
     while !reader.answered && !reader.eof {
@@ -1252,6 +1261,7 @@ pub(crate) fn connect(
         msg: Vec::new(),
         need: 0,
         backlog: Vec::new(),
+        frame: Vec::new(),
         eof: false,
     };
     Some((reader, GrpcWriter { shared, stream: 1 }))
