@@ -1066,7 +1066,8 @@ fn hunk_frame(data: &[u8]) -> Vec<u8> {
     out.push(0x0A);
     push_varint(&mut out, data.len() as u64);
     out.extend_from_slice(data);
-    out[1..5].copy_from_slice(&((out.len() - 5) as u32).to_be_bytes());
+    let hunk_len = (out.len() - 5) as u32;
+    out[1..5].copy_from_slice(&hunk_len.to_be_bytes());
     out
 }
 
