@@ -63,6 +63,21 @@ pub(crate) fn serve_file(path: &str) -> ! {
                     thread::spawn(move || accept_loop(&address_clone, &role));
                     inbounds += 1;
                 }
+                "vmess" => {
+                    let security = inbound_security(inbound);
+                    if !crate::vmess::security_supported(&security) {
+                        eprintln!(
+                            "vmess inbound security `{security}` in {path} is not implemented; \
+                             this binary speaks chacha20-poly1305"
+                        );
+                        continue;
+                    }
+                    let id = inbound_id(inbound);
+                    let address_clone = address.clone();
+                    let role = Role::Vmess { id, freedom };
+                    thread::spawn(move || accept_loop(&address_clone, &role));
+                    inbounds += 1;
+                }
                 "shadowsocks" => {
                     let password = inbound_ss_password(inbound);
                     let method = inbound_method(inbound);
@@ -112,6 +127,8 @@ enum Role {
     },
     /// Accept `trojan`, dial the requested target itself.
     Trojan { password: String, freedom: bool },
+    /// Accept `VMess`, dial the requested target itself.
+    Vmess { id: [u8; 16], freedom: bool },
     /// Accept `shadowsocks`, dial the requested target itself.
     Shadowsocks {
         password: String,
@@ -127,6 +144,8 @@ enum Role {
 enum Outbound {
     /// A `vnext` server and its user id bytes.
     Vless(VlessOut),
+    /// A `vmess` server, user id and data cipher.
+    Vmess(VmessOut),
     /// A `trojan` server and its password.
     Trojan(TrojanOut),
     /// A `shadowsocks` server, cipher, and password.
@@ -159,6 +178,19 @@ enum Carrier {
     HttpUpgrade { path: String },
     /// `gRPC` tunnel at this service path.
     Grpc { path: String },
+}
+
+/// A `vmess` upstream server.
+#[derive(Debug, Clone)]
+struct VmessOut {
+    /// Server host as written.
+    address: String,
+    /// Server port.
+    port: u16,
+    /// User id bytes.
+    id: [u8; 16],
+    /// Data cipher as written, empty when the config left it out.
+    security: String,
 }
 
 /// A `trojan` upstream server.
@@ -199,6 +231,7 @@ fn accept_loop(address: &str, role: &Role) {
                 freedom,
             } => serve_vless(stream, &id, &carrier, freedom),
             Role::Trojan { password, freedom } => serve_trojan(stream, &password, freedom),
+            Role::Vmess { id, freedom } => crate::vmess::serve(stream, &id, freedom),
             Role::Shadowsocks {
                 password,
                 method,
@@ -368,6 +401,7 @@ fn serve_socks(mut client: TcpStream, out: &Outbound) {
     };
     let (address, port) = match out {
         Outbound::Vless(vless) => (vless.address.clone(), vless.port),
+        Outbound::Vmess(vmess) => (vmess.address.clone(), vmess.port),
         Outbound::Trojan(trojan) => (trojan.address.clone(), trojan.port),
         Outbound::Shadowsocks(shadowsocks) => (shadowsocks.address.clone(), shadowsocks.port),
     };
@@ -391,6 +425,17 @@ fn serve_socks(mut client: TcpStream, out: &Outbound) {
                 return;
             }
             relay(&client, &uplink);
+        }
+        Outbound::Vmess(vmess) => {
+            if !crate::vmess::security_supported(&vmess.security) {
+                return;
+            }
+            let Some((send, recv)) =
+                crate::vmess::client_handshake(&mut uplink, &vmess.id, &target)
+            else {
+                return;
+            };
+            crate::vmess::pump_relay(&client, &uplink, send, recv);
         }
         Outbound::Shadowsocks(shadowsocks) => {
             let Some((send, recv)) = crate::shadowsocks::client_send_handshake(
@@ -542,6 +587,66 @@ pub(crate) fn push_addr(header: &mut Vec<u8>, target: &SocketAddr, v6: u8) {
     }
 }
 
+/// One parsed `SOCKS`-order address, before its port is attached.
+#[derive(Debug, Clone)]
+pub(crate) enum Address {
+    /// An `IPv4` or `IPv6` literal.
+    Ip(std::net::IpAddr),
+    /// A host name, kept as written rather than resolved while parsing.
+    Name(String),
+}
+
+impl Address {
+    /// The socket address this names at `port`, resolving a name to dial it.
+    pub(crate) fn socket(&self, port: u16) -> Option<SocketAddr> {
+        match self {
+            Self::Ip(ip) => Some(SocketAddr::new(*ip, port)),
+            Self::Name(name) => format!("{name}:{port}").to_socket_addrs().ok()?.next(),
+        }
+    }
+}
+
+/// Parse a `SOCKS`-order address out of `bytes`: the address and bytes used.
+///
+/// Type byte then the address, and no port: `shadowsocks` puts the port after
+/// the address and `VMess` before it, so each caller reads it where its own
+/// wire format puts it rather than this guessing one order for both.
+pub(crate) fn socks_addr(bytes: &[u8]) -> Option<(Address, usize)> {
+    let (&atyp, rest) = bytes.split_first()?;
+    match atyp {
+        1 => Some((
+            Address::Ip(
+                std::net::Ipv4Addr::new(
+                    *rest.first()?,
+                    *rest.get(1)?,
+                    *rest.get(2)?,
+                    *rest.get(3)?,
+                )
+                .into(),
+            ),
+            5,
+        )),
+        4 => Some((
+            Address::Ip(
+                std::net::Ipv6Addr::from(<[u8; 16]>::try_from(rest.get(..16)?).ok()?).into(),
+            ),
+            17,
+        )),
+        3 => {
+            let len = usize::from(*rest.first()?);
+            let host = std::str::from_utf8(rest.get(1..1 + len)?).ok()?;
+            Some((Address::Name(host.to_owned()), 2 + len))
+        }
+        _ => None,
+    }
+}
+
+/// The first two bytes as a big-endian port, the field every one of these wires
+/// carries; a longer slice is fine, since only the field is read.
+pub(crate) fn port(bytes: &[u8]) -> Option<u16> {
+    Some(u16::from_be_bytes(bytes.get(..2)?.try_into().ok()?))
+}
+
 /// Hex digits for password hashing.
 const HEX: &[u8; 16] = b"0123456789abcdef";
 
@@ -628,17 +733,31 @@ fn read_socks_addr_rest(stream: &mut TcpStream, atyp: u8) -> Option<SocketAddr> 
     }
 }
 
-/// First inbound `vless` client's id bytes, zeros when unparseable.
-fn inbound_id(inbound: &Json) -> [u8; 16] {
+/// First inbound client object, where `vless`, `trojan` and `vmess` keep theirs.
+fn first_client(inbound: &Json) -> Option<&Json> {
     inbound
         .get("settings")
         .and_then(|s| s.get("clients"))
         .and_then(Json::as_arr)
         .and_then(|clients| clients.first())
+}
+
+/// First inbound `vless` or `vmess` client's id bytes, zeros when unparseable.
+fn inbound_id(inbound: &Json) -> [u8; 16] {
+    first_client(inbound)
         .and_then(|client| client.get("id"))
         .and_then(Json::as_str)
         .and_then(uuid_bytes)
         .unwrap_or([0u8; 16])
+}
+
+/// First inbound `vmess` client's data cipher, `auto` when unparseable.
+fn inbound_security(inbound: &Json) -> String {
+    first_client(inbound)
+        .and_then(|client| client.get("security"))
+        .and_then(Json::as_str)
+        .unwrap_or("auto")
+        .to_owned()
 }
 
 /// Whether any entry in `array` names `protocol`.
@@ -672,21 +791,20 @@ pub(crate) fn inbound_ss_password(inbound: &Json) -> String {
 
 /// First inbound `trojan` client's password, empty when unparseable.
 fn inbound_password(inbound: &Json) -> String {
-    inbound
-        .get("settings")
-        .and_then(|s| s.get("clients"))
-        .and_then(Json::as_arr)
-        .and_then(|clients| clients.first())
+    first_client(inbound)
         .and_then(|client| client.get("password"))
         .and_then(Json::as_str)
         .unwrap_or("")
         .to_owned()
 }
 
-/// First non-`freedom` outbound in `vless`, `trojan`, `shadowsocks` order.
+/// First non-`freedom` outbound in `vless`, `vmess`, `trojan`, `shadowsocks` order.
 fn find_outbound(root: &Json) -> Option<Outbound> {
     if let Some(vless) = find_vless_outbound(root) {
         return Some(Outbound::Vless(vless));
+    }
+    if let Some(vmess) = find_vmess_outbound(root) {
+        return Some(Outbound::Vmess(vmess));
     }
     if let Some(trojan) = find_trojan_outbound(root) {
         return Some(Outbound::Trojan(trojan));
@@ -756,37 +874,86 @@ fn find_shadowsocks_outbound(root: &Json) -> Option<ShadowsocksOut> {
 
 /// First `vless` outbound's server and user, `None` when the shape differs.
 fn find_vless_outbound(root: &Json) -> Option<VlessOut> {
-    let empty = Vec::new();
-    let outbounds = root
-        .get("outbounds")
-        .and_then(Json::as_arr)
-        .unwrap_or(&empty);
-    for outbound in outbounds {
-        if outbound.get("protocol").and_then(Json::as_str) != Some("vless") {
+    let Vnext {
+        address,
+        port,
+        id,
+        outbound,
+        ..
+    } = find_vnext(root, "vless")?;
+    let (carrier, host) = outbound_carrier(outbound, &address);
+    Some(VlessOut {
+        address,
+        port,
+        id,
+        carrier,
+        host,
+    })
+}
+
+/// First `vmess` outbound's server, user and cipher, `None` otherwise.
+fn find_vmess_outbound(root: &Json) -> Option<VmessOut> {
+    let Vnext {
+        address,
+        port,
+        id,
+        user,
+        ..
+    } = find_vnext(root, "vmess")?;
+    let security = user
+        .get("security")
+        .and_then(Json::as_str)
+        .unwrap_or("auto")
+        .to_owned();
+    Some(VmessOut {
+        address,
+        port,
+        id,
+        security,
+    })
+}
+
+/// A `vnext` server and its first user: the outbound shape `vless` and `vmess` share.
+struct Vnext<'a> {
+    /// Server host as written.
+    address: String,
+    /// Server port.
+    port: u16,
+    /// First user's id bytes.
+    id: [u8; 16],
+    /// First user object, for a field only one of the two protocols reads.
+    user: &'a Json,
+    /// Outbound object, which is where `streamSettings` lives.
+    outbound: &'a Json,
+}
+
+/// First outbound naming `protocol`, with its `vnext` server and first user.
+fn find_vnext<'a>(root: &'a Json, protocol: &str) -> Option<Vnext<'a>> {
+    for outbound in root.get("outbounds").and_then(Json::as_arr).unwrap_or(&[]) {
+        if outbound.get("protocol").and_then(Json::as_str) != Some(protocol) {
             continue;
         }
-        let vnext = outbound
+        let server = outbound
             .get("settings")
             .and_then(|s| s.get("vnext"))
             .and_then(Json::as_arr)
             .and_then(|servers| servers.first());
-        let Some(server) = vnext else { continue };
+        let user = server
+            .and_then(|s| s.get("users"))
+            .and_then(Json::as_arr)
+            .and_then(|users| users.first());
+        let (Some(server), Some(user)) = (server, user) else {
+            continue;
+        };
         let address = server.get("address").and_then(Json::as_str)?.to_owned();
         let port = server.get("port").and_then(Json::as_port)?;
-        let id = server
-            .get("users")
-            .and_then(Json::as_arr)
-            .and_then(|users| users.first())
-            .and_then(|user| user.get("id"))
-            .and_then(Json::as_str)
-            .and_then(uuid_bytes)?;
-        let (carrier, host) = outbound_carrier(outbound, &address);
-        return Some(VlessOut {
+        let id = user.get("id").and_then(Json::as_str).and_then(uuid_bytes)?;
+        return Some(Vnext {
             address,
             port,
             id,
-            carrier,
-            host,
+            user,
+            outbound,
         });
     }
     None

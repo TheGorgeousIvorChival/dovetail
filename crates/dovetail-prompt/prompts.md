@@ -649,13 +649,13 @@ Give `dovetail-zeronet` a `trojan` server role and a `trojan` client role over r
 
 ## P25 · VMess protocol rung over raw TCP
 
-**When to use:** When the two vmess oracle failures are the next ones to clear: both expect a `vmess` listener and get exit 1.
-**Status:** todo
+**When to use:** Done. `crates/dovetail-zeronet/src/vmess.rs` carries the `AEAD` request header, the response header and the masked data frames in both roles over raw `TCP`; `vmess_over_raw_tcp_matches_the_oracle` runs unmodified against `dovetail-zeronet` in `conformance.yml`, in both directions. `vmess_over_websocket` is the remaining named failure and is P31.
+**Status:** done
 **Leverage:** 4
 **Effort:** large
-**Gates:** `cargo test --workspace`; CI: `conformance.yml` green with both vmess oracle tests executed against `dovetail-zeronet`
+**Gates:** `cargo test --workspace`; CI: `conformance.yml` green with `vmess_over_raw_tcp_matches_the_oracle` executed against `dovetail-zeronet`; `vmess_over_websocket_matches_the_oracle` reported as a named failure
 **Depends on:** P19
-**Touches:** crates/dovetail-zeronet/src/proxy.rs, upstream/pins.toml, docs/conformance.md
+**Touches:** crates/dovetail-zeronet/src/vmess.rs, crates/dovetail-zeronet/src/proxy.rs, upstream/pins.toml, docs/conformance.md
 **Random weight:** 2
 
 ```text
@@ -742,6 +742,78 @@ Land as one method only: the row, its proof, its gate, the suite flip in `upstre
 ```
 
 **Add-on — one-row:** If the row needs a second method to be testable (a carrier for a protocol, a TUN for a relay), record that as a new prompt section rather than widening this one.
+
+## P31 · VMess over the ws carrier
+
+**When to use:** When `vmess_over_websocket` is the last `xray_oracle` failure against this binary: it expects a `vmess` listener behind a `ws` carrier and gets a connection closed after the first byte.
+**Status:** todo
+**Leverage:** 3
+**Effort:** medium
+**Gates:** `cargo test --workspace`; CI: `conformance.yml` green with `vmess_over_websocket_matches_the_oracle` executed against `dovetail-zeronet`
+**Depends on:** P25
+**Touches:** crates/dovetail-zeronet/src/vmess.rs, crates/dovetail-zeronet/src/proxy.rs, upstream/pins.toml, docs/conformance.md
+**Random weight:** 2
+
+```text
+Carry `VMess` inside the `ws` carrier P27 already built, in both roles, rather than a second carrier: the handshake and the framing are `crate::ws`'s, and the bytes inside them are `crate::vmess`'s, unchanged. Then every `xray_oracle` test is either enabled or named, and the sentence in `docs/conformance.md` that lists the failures can go rather than be maintained.
+
+The `VMess` header is 100 bytes of sealed material behind a timestamp, so this is also the first carrier that carries a header rather than a fixed-size prologue: read it to the byte, never to the packet. A carrier that hands the protocol a short read is a hang wearing a successful handshake.
+```
+
+## P32 · A speed gate for the protocol data path, or an honest gap
+
+**When to use:** Now that `dovetail-zeronet` moves real bytes through `aes-gcm` and `chacha20poly1305` while the only benchmark in the tree measures `dovetail-core::record` against the `chacha20` crate: no measurement in this repository says anything about the path that traffic actually takes.
+**Status:** todo
+**Leverage:** 4
+**Effort:** large
+**Gates:** `cargo run --locked --release -p dovetail-bench`; CI: `bench.yml` gate 1 and gate 2 green on every runner in the matrix
+**Depends on:** P5
+**Touches:** crates/dovetail-bench/src/methods.rs, crates/dovetail-zeronet/src/vmess.rs, docs/methodology.md
+**Random weight:** 2
+
+```text
+Measure the `VMess` and `Shadowsocks` data paths per length and per frame boundary, on all four ISA runners, against the same `chacha20` reference the record gate uses, and print the ratio beside the record row rather than in a table of its own. A number that does not sit next to the number it is compared against is context, not evidence.
+
+Then say which of the two is true, in the report and in the README's status table: either the crate AEAD is within noise of `dovetail-core`'s own core, in which case the protocol paths are inside the existing "not slower" claim and the gate says so, or it is not, in which case the claim is narrowed to the record layer and the gap is named. Do not widen "not slower at any measured length" to cover a path no gate measures; that sentence is the one this repository is built on.
+
+Per-frame cost is the shape the ratio will turn on, not per-byte: `VMess` seals one `ChaCha20-Poly1305` frame per 8 KiB with a `SHAKE128` draw and a counter per frame, so the length ladder has to include one frame, two frames and the 65535-frame counter exhaustion, or it measures a per-frame constant as if it were throughput.
+```
+
+## P33 · Name the rows the serving roles already earned
+
+**When to use:** Whenever a protocol role lands and the README connection-methods matrix still describes it as planned: rows 5, 6 and 7 all read `planned` while `trojan`, `vmess` and `shadowsocks` raw-`TCP` rungs are in the tree and green in `conformance.yml`.
+**Status:** todo
+**Leverage:** 2
+**Effort:** small
+**Gates:** CI: `ci.yml` green; `conformance.yml` green with the named oracle tests executed against `dovetail-zeronet`
+**Depends on:** P30
+**Touches:** README.md, docs/arch/superset.md
+**Random weight:** 1
+
+```text
+Flip the matrix cells whose rungs are implemented, and put the run that proves each one in the cell rather than the word `implemented`. A cell that says `implemented` names no run and is checked by nobody; a cell that says `implemented (conformance 37117499970)` is a claim with a citation, and the citation is the thing that goes red when the claim stops being true.
+
+Take the rows one at a time and name the limit as well as the win: `VMess` row 6 is raw `TCP` only, one data cipher, no `UDP` command and no Mux, so the cell says which of those it leaves out rather than rounding up to the protocol.
+```
+
+## P34 · Make the gRPC loopback test stop failing one run in nine
+
+**When to use:** Now, and before the next slice reads a red `cargo test --workspace` as its own: `grpc::tests::tunnel_carries_an_echo_over_loopback` fails 23 times in 200 runs of that one test with nothing else running, on a tree where `grpc.rs` was never touched. `grpc.rs` is not this slice's business; the measurement is.
+**Status:** todo
+**Leverage:** 3
+**Effort:** medium
+**Gates:** `cargo test --workspace` green on three consecutive runs; a loop of the single test over 200 runs with zero failures, printed by the test or the script rather than remembered
+**Depends on:** P19
+**Touches:** crates/dovetail-zeronet/src/grpc.rs
+**Random weight:** 2
+
+```text
+Find it with the trace rather than by reading, because reading says nothing about which of the two ends drops the frame. Instrument `read_head`, `read_body`, `emit` and `write_frame` with the peer's address and run the test in a loop until it fails. A failing run prints this, and the last two lines are the whole bug: the client reads the nine header bytes of the `pong` `DATA` frame, then `read_body` sees end of stream, so the header arrived and its body did not. That is a torn write or a reset with data in the receive queue, not a framing error, and the fix is whichever of the two it turns out to be.
+
+Then make the test able to fail *deterministically*, because a test that fails one run in nine teaches the next contributor to re-run CI instead of reading it. A loopback test that needs a real socket to lose a race is testing the scheduler; the same assertion over a `DuplexStream` or a frame buffer fails every time it is wrong and never flakes.
+
+Report the before and after as a rate over a stated number of runs. "Fixed" is not a rate.
+```
 
 ## Reading this file as a roadmap
 

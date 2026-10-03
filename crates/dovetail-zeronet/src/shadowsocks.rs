@@ -4,7 +4,7 @@
 //! the first chunk. Only this cipher exists here: anything else closes fast.
 
 use std::io::{Read, Write};
-use std::net::{Shutdown, SocketAddr, TcpStream, ToSocketAddrs};
+use std::net::{Shutdown, SocketAddr, TcpStream};
 use std::thread;
 use std::time::Duration;
 
@@ -12,7 +12,7 @@ use aes_gcm::{aead::AeadInPlace, Aes256Gcm, KeyInit, Nonce};
 use hkdf::Hkdf;
 use sha1::Sha1;
 
-use crate::proxy::{push_addr, read_exact};
+use crate::proxy::{port, push_addr, read_exact, socks_addr};
 
 /// Salt bytes per session, and tag bytes per sealed chunk.
 const SALT_LEN: usize = 32;
@@ -39,13 +39,19 @@ pub(crate) fn serve(mut stream: TcpStream, password: &str, method: &str, freedom
     let Some(first) = open_chunk(&mut stream, &mut recv) else {
         return;
     };
-    let Some((target, used)) = parse_addr_header(&first) else {
+    let Some((address, addr_len)) = socks_addr(&first) else {
+        return;
+    };
+    let Some(target_port) = port(&first[addr_len..]) else {
+        return;
+    };
+    let Some(target) = address.socket(target_port) else {
         return;
     };
     let Ok(mut uplink) = TcpStream::connect_timeout(&target, Duration::from_secs(8)) else {
         return;
     };
-    if uplink.write_all(&first[used..]).is_err() {
+    if uplink.write_all(&first[addr_len + 2..]).is_err() {
         return;
     }
     let mut salt = [0u8; SALT_LEN];
@@ -245,54 +251,6 @@ fn open_into(recv: &mut Cipher, chunk: &mut [u8]) -> Option<Vec<u8>> {
         )
         .ok()?;
     Some(body.to_vec())
-}
-
-/// Parse a `SOCKS`-order address header, returning the target and bytes used.
-fn parse_addr_header(buf: &[u8]) -> Option<(SocketAddr, usize)> {
-    let &atyp = buf.first()?;
-    match atyp {
-        1 => {
-            if buf.len() < 7 {
-                return None;
-            }
-            let mut ip = [0u8; 4];
-            ip.copy_from_slice(&buf[1..5]);
-            let mut port = [0u8; 2];
-            port.copy_from_slice(&buf[5..7]);
-            Some((
-                SocketAddr::new(std::net::IpAddr::V4(ip.into()), u16::from_be_bytes(port)),
-                7,
-            ))
-        }
-        4 => {
-            if buf.len() < 19 {
-                return None;
-            }
-            let mut ip = [0u8; 16];
-            ip.copy_from_slice(&buf[1..17]);
-            let mut port = [0u8; 2];
-            port.copy_from_slice(&buf[17..19]);
-            Some((
-                SocketAddr::new(std::net::IpAddr::V6(ip.into()), u16::from_be_bytes(port)),
-                19,
-            ))
-        }
-        3 => {
-            let len = usize::from(*buf.get(1)?);
-            if len == 0 || buf.len() < 2 + len + 2 {
-                return None;
-            }
-            let host = std::str::from_utf8(&buf[2..2 + len]).ok()?;
-            let mut port = [0u8; 2];
-            port.copy_from_slice(&buf[2 + len..4 + len]);
-            let target = format!("{host}:{}", u16::from_be_bytes(port))
-                .to_socket_addrs()
-                .ok()?
-                .next()?;
-            Some((target, 4 + len))
-        }
-        _ => None,
-    }
 }
 
 #[cfg(test)]

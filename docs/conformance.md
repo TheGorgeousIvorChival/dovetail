@@ -1,6 +1,6 @@
 # Conformance: all of their tests, enabled gradually
 
-This project becomes a drop-in replacement (Goal 2) by running upstream suites *against* Dovetail binaries in CI — never by copying them here. sing-box is GPL-3.0, Xray-core / xray-rust are MPL-2.0 and PattNG / Aether are GPL-3.0 / AGPL-3.0; copying their tests would make this work's licence undecidable. Running them unmodified is both licence-clean and a stronger claim than a hand-rewritten vector. **One suite does that against this workspace**: `zeronet` runs its `xray_oracle` raw-`TCP` `VLESS` differential against `dovetail-zeronet`, checked by `conformance.yml`; the other eight oracle tests and the other eleven pins do not, each for the named reason below.
+This project becomes a drop-in replacement (Goal 2) by running upstream suites *against* Dovetail binaries in CI — never by copying them here. sing-box is GPL-3.0, Xray-core / xray-rust are MPL-2.0 and PattNG / Aether are GPL-3.0 / AGPL-3.0; copying their tests would make this work's licence undecidable. Running them unmodified is both licence-clean and a stronger claim than a hand-rewritten vector. **One suite does that against this workspace**: `zeronet` runs its `xray_oracle` raw-`TCP` `VLESS`, `trojan`, `shadowsocks` and `vmess` differentials against `dovetail-zeronet`, checked by `conformance.yml`; the other six oracle tests and the other eleven pins do not, each for the named reason below.
 
 ## The rule
 
@@ -15,7 +15,7 @@ A suite flips to `true` only when:
 2. the differential proof for that rung is green at every length and offset,
 3. the benchmark gate for that rung is green on all four ISA runners.
 
-Eleven entries are disabled and one (`zeronet`, raw-`TCP` `VLESS` only) is enabled: `xray-core` stays disabled because its suite runs upstream code only with no Dovetail binary wired yet, and `run-upstream-suite.sh` fails an enabled entry with none rather than printing PASS.
+Eleven entries are disabled and one (`zeronet`, the enabled raw-`TCP` subset named below) is enabled: `xray-core` stays disabled because its suite runs upstream code only with no Dovetail binary wired yet, and `run-upstream-suite.sh` fails an enabled entry with none rather than printing PASS.
 
 ## What each suite is missing, measured
 
@@ -50,14 +50,16 @@ Two of twelve have a seam. Both require a **server** role — `zray_client_to_xr
 | amnezia-client crypto | `94b51df2` | ❌ false | no seam; C++/Qt, test material is Conan-installed |
 | xray-rust | `7a4fb2dd` | ❌ false | seam `XRAY_VLESS_FULL_BINARY` exists; needs a VLESS **server** subcommand and `x25519` |
 | PattNG (v2rayNG fork) | `ad6f747c` | ❌ false | no seam; Android/Gradle, and the unsafe rows need `UnsafeOptIn` first |
-| ZeroNet / Zray | `97a99734` | ✅ true | seam `ZRAY_XRAY_BINARY` exists; runs the raw-`TCP` `VLESS`, `trojan` and `shadowsocks` plus `VLESS`-over-`WebSocket`, `HTTPUpgrade` and `gRPC` subset against `dovetail-zeronet`, checked by `conformance.yml` |
+| ZeroNet / Zray | `97a99734` | ✅ true | seam `ZRAY_XRAY_BINARY` exists; runs the raw-`TCP` `VLESS`, `trojan`, `shadowsocks` and `vmess` plus `VLESS`-over-`WebSocket`, `HTTPUpgrade` and `gRPC` subset against `dovetail-zeronet`, checked by `conformance.yml` |
 | mqvpn MASQUE/MP-QUIC | `b11a2f69` | ❌ false | no seam; `ctest` plus netns E2E need root and a live server pair |
 | Aether WARP core | `21e7150a` | ❌ false | no seam; open-source Rust core pinned directly — PattNG's `.so` is that core vendored, this pin is the source |
 | zeptun tun2socks | `5620e57c` | ❌ false | no seam; `zig build test` plus TUN/netns integration, no proxy harness to inject |
 | slipstream DNS tunnel | `397850b1` | ❌ false | no seam; client/server over DNS need a domain delegation, not a binary swap |
 | quiche QUIC/H3 | `3fc9bc1c` | ❌ false | no seam; library only — compared by differential benchmark once a QUIC rung dials |
 
-The other three `xray_oracle` tests fail against this binary, each measured in `conformance.yml` run `37100395876` with no file edited: `trojan_over_websocket`, `vmess_over_raw_tcp` and `vmess_over_websocket` expect a `vmess` listener or a `trojan`-over-`WS` carrier and get none — the binary exits 1 on the unknown inbound. Those three stay out of the enabled suite command until their rung lands; a subset that passes is a subset.
+The other two `xray_oracle` tests fail against this binary, measured in `conformance.yml` with no file edited: `trojan_over_websocket` and `vmess_over_websocket` expect a `trojan` or a `vmess` listener behind a `ws` carrier and get none — the binary closes a connection it cannot carry rather than answering. Those two stay out of the enabled suite command until their carrier lands; a subset that passes is a subset.
+
+`vmess_over_raw_tcp` was in that list until this rung: it expected a `vmess` listener and got exit 1 on the unknown inbound. It now passes unmodified in both directions — `dovetail-zeronet`'s server against ZeroNet's client and its client against ZeroNet's server — over the same raw-`TCP` `VLESS`, `trojan` and `shadowsocks` framing, and the suite command names it.
 
 The ten pins with no seam were each read for a socket-taking harness instead — a test that dials an address the suite takes from the environment, which is the only shape usable without editing it — and none has one, measured against the fetched trees: `xray-core` `proxy/vless` tests never call `os/exec` or read the environment for a binary; `sing-box` has no `_test.go` under `protocol/shadowsocks` or `protocol/vless` at all; `amneziawg-go` `device` tests are in-process with no `os/exec`; `amnezia-client` tests are `C++`/`Qt` model tests with no proxy harness; `pattng` names its core as `.so` constants (`libaether.so`), not an injectable path — but that core is open source and is now pinned directly as `aether`, so its transports are covered there rather than through PattNG; `mqvpn` tests are `ctest` plus netns E2E with no env address harness; `aether` is a CLI without a socket-taking test harness; `zeptun` tests are unit plus TUN/netns integration with no proxy harness; `slipstream` client/server need a DNS delegation, not a dial address; `quiche` is a library with no suite to inject into. Driving any of them without its rung would mean editing their tests, which is inventing a runner outside their test rather than running it.
 
