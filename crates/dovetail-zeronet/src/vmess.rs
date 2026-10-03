@@ -793,7 +793,11 @@ fn write_frame(
             return false;
         }
     }
-    true
+    // One flush per frame, which is one message per frame on a message-framed
+    // carrier and nothing at all on a socket. Without it a framed carrier would
+    // emit three messages per VMess frame — length, body, padding — because the
+    // writes above are three separate calls.
+    stream.flush().is_ok()
 }
 
 /// Read one data frame into `scratch`, returning its plaintext length.
@@ -877,7 +881,7 @@ pub(crate) fn client_handshake(
 
 /// Read and check the server's response header on a client stream.
 fn read_response(
-    stream: &mut TcpStream,
+    stream: &mut dyn Read,
     response_key: &[u8; 16],
     response_iv: &[u8; 16],
     auth: u8,
@@ -914,7 +918,7 @@ fn read_response(
 
 /// Read and open one sealed request header, returning its clear bytes.
 fn read_open_header(
-    stream: &mut TcpStream,
+    stream: &mut dyn Read,
     instruction: &[u8; 16],
     auth_id: &[u8; AUTH_LEN],
 ) -> Option<Vec<u8>> {
@@ -979,7 +983,7 @@ fn decode_header(header: &[u8]) -> Option<(SocketAddr, Flow, Flow, Vec<u8>)> {
 }
 /// Read and check one request, returning its target and both directions.
 fn accept_request(
-    stream: &mut TcpStream,
+    stream: &mut dyn Read,
     id: &[u8; 16],
 ) -> Option<(SocketAddr, Flow, Flow, Vec<u8>)> {
     let mut auth_id = [0u8; AUTH_LEN];
@@ -990,6 +994,142 @@ fn accept_request(
     }
     let header = read_open_header(stream, &instruction, &auth_id)?;
     decode_header(&header)
+}
+
+/// A [`Write`] sink that turns each flush into one `WebSocket` binary message.
+///
+/// `VMess` frames are written as several `write_all` calls — length, body,
+/// padding — and the `ws` carrier is message-framed rather than byte-framed, so
+/// without this each of those calls would become its own message and a single
+/// frame would arrive as three. Buffering until `flush` makes the carrier's
+/// message boundary the frame boundary, which is what the peer's reader expects:
+/// it reads a byte stream out of the messages and never looks at the boundary.
+struct WsSink {
+    /// Carrier the message goes out through.
+    writer: crate::ws::WsWriter,
+    /// Bytes written since the last flush, one message's worth.
+    staged: Vec<u8>,
+}
+
+impl std::io::Write for WsSink {
+    fn write(&mut self, data: &[u8]) -> std::io::Result<usize> {
+        self.staged.extend_from_slice(data);
+        Ok(data.len())
+    }
+
+    fn flush(&mut self) -> std::io::Result<()> {
+        if self.staged.is_empty() {
+            return Ok(());
+        }
+        let sent = self.writer.send(&self.staged);
+        self.staged.clear();
+        if sent {
+            Ok(())
+        } else {
+            Err(std::io::Error::from(std::io::ErrorKind::BrokenPipe))
+        }
+    }
+}
+
+/// Relay sealed both ways where the sealed side is a `ws` carrier rather than a
+/// socket.
+///
+/// The frame logic is [`pump_relay`]'s, unchanged: `read_frame` and
+/// `write_frame` take `dyn Read` and `dyn Write`, so the carrier substitutes for
+/// the socket and nothing above them can tell which it was. What differs is only
+/// the plumbing — a carrier has a reader half and a writer half rather than one
+/// object that clones four ways, and closing it is a close frame instead of a
+/// `shutdown`.
+pub(crate) fn pump_relay_carried(
+    plain: &TcpStream,
+    mut reader: crate::ws::WsReader,
+    writer: &crate::ws::WsWriter,
+    send: Flow,
+    recv: Flow,
+) {
+    let Ok(plain_read) = plain.try_clone() else {
+        return;
+    };
+    let Ok(plain_write) = plain.try_clone() else {
+        return;
+    };
+    let mut plain_read = plain_read;
+    let mut plain_write = plain_write;
+
+    let uplink = writer.clone();
+    let mut send = send;
+    let done = thread::spawn(move || {
+        let mut buf = vec![0u8; MAX_PLAIN];
+        let mut sink = WsSink {
+            writer: uplink,
+            staged: Vec::with_capacity(MAX_PLAIN + TAG_LEN),
+        };
+        let mut staging = Vec::with_capacity(MAX_PLAIN + TAG_LEN);
+        let mut noise = [0u8; 64];
+        while let Ok(read) = plain_read.read(&mut buf) {
+            if read == 0 {
+                let _ = write_frame(&mut sink, &mut send, &[], &mut staging, &mut noise);
+                break;
+            }
+            let mut at = 0;
+            let mut ok = true;
+            while at < read {
+                let end = (at + MAX_PLAIN).min(read);
+                if !write_frame(
+                    &mut sink,
+                    &mut send,
+                    &buf[at..end],
+                    &mut staging,
+                    &mut noise,
+                ) {
+                    ok = false;
+                    break;
+                }
+                at = end;
+            }
+            if !ok {
+                break;
+            }
+        }
+        sink.writer.close();
+        let _ = plain_read.shutdown(Shutdown::Both);
+    });
+
+    let mut recv = recv;
+    let mut scratch = Vec::with_capacity(MAX_PLAIN + TAG_LEN + 64);
+    while let Some(chunk) = read_frame(&mut reader, &mut recv, &mut scratch) {
+        if chunk.is_empty() || plain_write.write_all(chunk).is_err() {
+            break;
+        }
+    }
+    writer.close();
+    let _ = plain_write.shutdown(Shutdown::Both);
+    let _ = done.join();
+}
+
+/// Accept one `VMess` connection inside a `ws` carrier, dial and relay.
+///
+/// The header is a hundred bytes or so of sealed material behind an eight-byte
+/// auth id, so it is read to the byte and never to the packet: the carrier's
+/// reader is a byte stream over messages, and a short read here is a hang wearing
+/// a successful handshake.
+pub(crate) fn serve_ws(stream: TcpStream, path: &str, id: &[u8; 16], freedom: bool) {
+    let Some((mut reader, writer)) = crate::ws::accept(stream, path) else {
+        return;
+    };
+    let Some((target, send, recv, prefix)) = accept_request(&mut reader, id) else {
+        return;
+    };
+    if !freedom {
+        return;
+    }
+    let Ok(uplink) = TcpStream::connect_timeout(&target, Duration::from_secs(8)) else {
+        return;
+    };
+    if !writer.send(&prefix) {
+        return;
+    }
+    pump_relay_carried(&uplink, reader, &writer, send, recv);
 }
 
 /// Accept one `VMess` connection, dial its target and relay sealed both ways.
@@ -1155,6 +1295,85 @@ mod tests {
             &mut noise
         ));
         assert_eq!(writer.join().expect("joins"), b"ping");
+    }
+
+    /// `VMess` inside the `ws` carrier, both roles, end to end.
+    ///
+    /// This is the row that could not be carried before: the framing was written
+    /// against `&mut TcpStream` at every level, so a `ws` listener had no path
+    /// into it. The request is a sealed header, not a fixed-size prologue, so the
+    /// carrier's reader has to hand it over to the byte — a short read here is a
+    /// hang wearing a successful handshake, which is exactly what the raw-`TCP`
+    /// oracle reported when it pointed this binary at a `ws` listener.
+    #[test]
+    fn vmess_carries_over_the_ws_carrier_both_ways() {
+        // An echo server to be the tunnel target.
+        let echo = TcpListener::bind("127.0.0.1:0").expect("binds echo");
+        let echo_port = echo.local_addr().expect("echo addr").port();
+        thread::spawn(move || {
+            for stream in echo.incoming().take(1) {
+                let Ok(mut stream) = stream else { continue };
+                let mut buf = [0u8; 256];
+                if let Ok(n) = stream.read(&mut buf) {
+                    let _ = stream.write_all(&buf[..n]);
+                }
+            }
+        });
+
+        let id = [0x5au8; 16];
+        let path = "/vmess-ws";
+        let listener = TcpListener::bind("127.0.0.1:0").expect("binds");
+        let port = listener.local_addr().expect("addr").port();
+        let server_id = id;
+        let server_path = path.to_string();
+        thread::spawn(move || {
+            let (stream, _) = listener.accept().expect("accepts");
+            serve_ws(stream, &server_path, &server_id, true);
+        });
+
+        // Client side: the same handshake the socket path builds, sent as ws
+        // messages instead of written to the socket.
+        let target: SocketAddr = format!("127.0.0.1:{echo_port}").parse().expect("target");
+        let stream = TcpStream::connect(("127.0.0.1", port)).expect("connects");
+        let (mut reader, writer) =
+            crate::ws::connect(stream, &format!("127.0.0.1:{port}"), path).expect("carries");
+
+        let (request, data_key, data_iv, auth) =
+            request_bytes(&id, Cipher::Chacha, &target).expect("request");
+        assert!(writer.send(&request), "request goes out as one message");
+
+        let (response_key, response_iv) = response_material(&data_iv, &data_key);
+        assert!(
+            read_response(&mut reader, &response_key, &response_iv, auth),
+            "the server's response header opens over the carrier"
+        );
+
+        let options = OPT_STREAM | OPT_MASK | OPT_PAD;
+        let mut send =
+            Flow::fresh(Cipher::Chacha, &data_key, &data_iv, options, &data_iv).expect("sends");
+        let mut recv = Flow::fresh(
+            Cipher::Chacha,
+            &response_key,
+            &response_iv,
+            options,
+            &response_iv,
+        )
+        .expect("recvs");
+
+        let mut sink = WsSink {
+            writer: writer.clone(),
+            staged: Vec::new(),
+        };
+        let mut staging = Vec::new();
+        let mut noise = [0u8; 64];
+        let mut scratch = Vec::new();
+
+        assert!(
+            write_frame(&mut sink, &mut send, b"ping", &mut staging, &mut noise),
+            "a sealed frame goes out over the carrier"
+        );
+        let back = read_frame(&mut reader, &mut recv, &mut scratch).expect("reads");
+        assert_eq!(back, b"ping", "the echo came back through the carrier");
     }
 
     /// The table and the loop it replaced have to agree, and agreeing with each
