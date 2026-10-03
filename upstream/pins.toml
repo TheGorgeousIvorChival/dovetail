@@ -28,6 +28,13 @@
 # fails an enabled entry with no binary, and refuses to call a suite that cannot
 # read the seam a run against one — a binary that is built and never executed
 # proves nothing, which is the failure this pair of fields exists to make visible.
+#
+# `gate_tests` is the space-separated list of upstream test names that must pass.
+# The `suite` command itself is the whole unmodified upstream command, and every
+# test it runs prints its own verdict; the gate is the subset that may be green
+# while the rest fail, because a rung that has not landed cannot be. A test that
+# passes without the gate naming it fails the job, so the count reported in
+# docs/conformance.md cannot drift upward without a commit that says so.
 
 [sources.xray-core]
 repo          = "https://github.com/XTLS/Xray-core"
@@ -97,7 +104,8 @@ rev           = "97a99734e95029c8bf90ab0cdc578d0561a57724"
 default_branch = "main"
 path          = "crates"
 test_enabled  = true
-suite         = "cargo test -p zero-runtime --test xray_oracle -- --ignored --test-threads=1 vless_over_raw_tcp_matches_the_oracle"
+suite         = "cargo test -p zero-runtime --test xray_oracle -- --ignored --test-threads=1"
+gate_tests    = "vless_over_raw_tcp_matches_the_oracle"
 dovetail_binary = "dovetail-zeronet"
 seam           = "ZRAY_XRAY_BINARY"
-note          = "MIT-licensed Zray core + TUI + Android app; dovetail-zeronet builds the same app surface on dovetail-core. Enabled as the 1-test raw-TCP VLESS subset (P19); the other eight oracle tests need transports this binary closes on, and stay disabled by name in docs/conformance.md"
+note          = "MIT-licensed Zray core + TUI + Android app; dovetail-zeronet builds the same app surface on dovetail-core. Enabled with the full unmodified xray_oracle command: all 17 tests run and every verdict is printed, and the gate is the one that passes. The other 16 need transports, protocols or REALITY this binary does not serve yet, and stay named failures in docs/conformance.md"
