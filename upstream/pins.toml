@@ -36,8 +36,8 @@ default_branch = "main"
 path          = "crypto/chacha20"
 test_enabled  = false
 suite         = "go test -count=1 -timeout 8m ./proxy/vless/..."
-dovetail_binary = "dovetail-zeronet"
-note          = "vmess and shadowsocks record layer; the four-block refill this workspace removes. Suite runs upstream's own VLESS tests at this pin (guards the reference behavior rung 1 claims to match); our header differential is vless::tests in cargo test. Disabled: the suite runs upstream code only with no Dovetail binary wired yet"
+dovetail_binary = ""
+note          = "vmess and shadowsocks record layer; the four-block refill this workspace removes. Suite runs upstream's own VLESS tests at this pin (guards the reference behavior rung 1 claims to match); our header differential is vless::tests in cargo test. Disabled: in-process Go with no seam at this rev (0 os/exec in proxy/vless), so no Dovetail binary can be injected"
 
 [sources.sing-box]
 repo          = "https://github.com/SagerNet/sing-box"

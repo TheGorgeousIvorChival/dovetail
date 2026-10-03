@@ -40,6 +40,7 @@ parse_pins() {
 
 status=0
 ran=0
+workspace="$PWD"
 while IFS=$'\t' read -r name repo rev enabled suite binary seam; do
   [[ "$suite" == "-" ]] && suite=""
   [[ "$binary" == "-" ]] && binary=""
@@ -103,7 +104,7 @@ while IFS=$'\t' read -r name repo rev enabled suite binary seam; do
   # The suite reads the binary out of the environment, so the seam carries the
   # absolute path: the clone runs from a temp directory, and a relative path
   # there would name a different binary than the one just built.
-  if (cd "$dir" && env "$seam=$PWD/target/debug/$binary" bash -c "$suite"); then
+  if (cd "$dir" && env "$seam=$workspace/target/debug/$binary" bash -c "$suite"); then
     echo "PASS: $name suite green against $binary at $rev (injected via $seam)"
     ran=$((ran + 1))
   else
