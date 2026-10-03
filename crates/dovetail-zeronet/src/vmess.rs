@@ -667,21 +667,20 @@ type RequestParts = (Vec<u8>, [u8; 16], [u8; 16], u8);
 fn request_bytes(uuid: &[u8; 16], cipher: Cipher, target: &SocketAddr) -> Option<RequestParts> {
     let instruction = instruction_key(uuid);
     let auth_id = make_auth_id(&instruction)?;
+    // One entropy call for every fixed field: six calls here used to mean six
+    // syscalls per dial, all for bytes one call already returns uniformly.
+    let mut rand = [0u8; 16 + 16 + 1 + 8 + 1];
+    if !random_into(&mut rand) {
+        return None;
+    }
     let mut data_iv = [0u8; 16];
     let mut data_key = [0u8; 16];
-    let mut auth = [0u8; 1];
+    data_iv.copy_from_slice(&rand[..16]);
+    data_key.copy_from_slice(&rand[16..32]);
+    let auth = [rand[32]];
     let mut nonce = [0u8; 8];
-    if !random_into(&mut data_iv) || !random_into(&mut data_key) {
-        return None;
-    }
-    if !random_into(&mut auth) || !random_into(&mut nonce) {
-        return None;
-    }
-    let mut pad_len = [0u8; 1];
-    if !random_into(&mut pad_len) {
-        return None;
-    }
-    let pad_len = usize::from(pad_len[0] % 16);
+    nonce.copy_from_slice(&rand[33..41]);
+    let pad_len = usize::from(rand[41] % 16);
     let options = OPT_STREAM | OPT_MASK | OPT_PAD;
     let mut clear = Vec::with_capacity(64);
     clear.push(1);
@@ -694,11 +693,13 @@ fn request_bytes(uuid: &[u8; 16], cipher: Cipher, target: &SocketAddr) -> Option
     clear.push(1);
     encode_target(&mut clear, target);
     if pad_len > 0 {
-        let mut pad = vec![0u8; pad_len];
-        if !random_into(&mut pad) {
+        // Stack, not heap: the old per-request `Vec` allocated to hold bytes
+        // nobody reads, then zeroed them just to overwrite them with random.
+        let mut pad = [0u8; 15];
+        if !random_into(&mut pad[..pad_len]) {
             return None;
         }
-        clear.extend_from_slice(&pad);
+        clear.extend_from_slice(&pad[..pad_len]);
     }
     clear.extend_from_slice(&fnv1a(&clear).to_be_bytes());
     let len_key = kdf16(
