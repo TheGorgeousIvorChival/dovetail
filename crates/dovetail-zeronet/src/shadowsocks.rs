@@ -40,7 +40,7 @@ pub(crate) fn serve(mut stream: TcpStream, password: &str, method: &str, freedom
     let Some(first) = open_chunk(&mut stream, &mut recv, &mut first) else {
         return;
     };
-    let Some((target, used)) = parse_addr_header(&first) else {
+    let Some((target, used)) = parse_addr_header(first) else {
         return;
     };
     let Ok(mut uplink) = TcpStream::connect_timeout(&target, Duration::from_secs(8)) else {
