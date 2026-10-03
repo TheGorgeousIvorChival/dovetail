@@ -63,6 +63,13 @@ pub(crate) fn serve_file(path: &str) -> ! {
                     thread::spawn(move || accept_loop(&address_clone, &role));
                     inbounds += 1;
                 }
+                "vmess" => {
+                    let id = inbound_id(inbound);
+                    let address_clone = address.clone();
+                    let role = Role::Vmess { id, freedom };
+                    thread::spawn(move || accept_loop(&address_clone, &role));
+                    inbounds += 1;
+                }
                 "shadowsocks" => {
                     let password = inbound_ss_password(inbound);
                     let method = inbound_method(inbound);
@@ -112,6 +119,8 @@ enum Role {
     },
     /// Accept `trojan`, dial the requested target itself.
     Trojan { password: String, freedom: bool },
+    /// Accept `VMess`, dial the requested target itself.
+    Vmess { id: [u8; 16], freedom: bool },
     /// Accept `shadowsocks`, dial the requested target itself.
     Shadowsocks {
         password: String,
@@ -129,6 +138,8 @@ enum Outbound {
     Vless(VlessOut),
     /// A `trojan` server and its password.
     Trojan(TrojanOut),
+    /// A `vmess` server, user id and cipher.
+    Vmess(VmessOut),
     /// A `shadowsocks` server, cipher, and password.
     Shadowsocks(ShadowsocksOut),
 }
@@ -159,6 +170,19 @@ enum Carrier {
     HttpUpgrade { path: String },
     /// `gRPC` tunnel at this service path.
     Grpc { path: String },
+}
+
+/// A `vmess` upstream server.
+#[derive(Debug, Clone)]
+struct VmessOut {
+    /// Server host as written.
+    address: String,
+    /// Server port.
+    port: u16,
+    /// User id bytes.
+    id: [u8; 16],
+    /// Data cipher as written.
+    cipher: crate::vmess::Cipher,
 }
 
 /// A `trojan` upstream server.
@@ -199,6 +223,7 @@ fn accept_loop(address: &str, role: &Role) {
                 freedom,
             } => serve_vless(stream, &id, &carrier, freedom),
             Role::Trojan { password, freedom } => serve_trojan(stream, &password, freedom),
+            Role::Vmess { id, freedom } => crate::vmess::serve(stream, &id, freedom),
             Role::Shadowsocks {
                 password,
                 method,
@@ -368,6 +393,7 @@ fn serve_socks(mut client: TcpStream, out: &Outbound) {
     };
     let (address, port) = match out {
         Outbound::Vless(vless) => (vless.address.clone(), vless.port),
+        Outbound::Vmess(vmess) => (vmess.address.clone(), vmess.port),
         Outbound::Trojan(trojan) => (trojan.address.clone(), trojan.port),
         Outbound::Shadowsocks(shadowsocks) => (shadowsocks.address.clone(), shadowsocks.port),
     };
@@ -379,6 +405,20 @@ fn serve_socks(mut client: TcpStream, out: &Outbound) {
     };
     match out {
         Outbound::Vless(vless) => dial_vless(&client, uplink, vless, &target),
+        Outbound::Vmess(vmess) => {
+            let Some((send, recv, response_key, response_iv, auth)) =
+                crate::vmess::client_handshake(&mut uplink, &vmess.id, vmess.cipher, &target)
+            else {
+                return;
+            };
+            crate::vmess::pump_relay(
+                &client,
+                &uplink,
+                send,
+                recv,
+                Some((response_key, response_iv, auth)),
+            );
+        }
         Outbound::Trojan(trojan) => {
             let mut header = Vec::with_capacity(70);
             header.extend_from_slice(&trojan_key(&trojan.password));
@@ -683,10 +723,13 @@ fn inbound_password(inbound: &Json) -> String {
         .to_owned()
 }
 
-/// First non-`freedom` outbound in `vless`, `trojan`, `shadowsocks` order.
+/// First non-`freedom` outbound in `vless`, `vmess`, `trojan`, `shadowsocks` order.
 fn find_outbound(root: &Json) -> Option<Outbound> {
     if let Some(vless) = find_vless_outbound(root) {
         return Some(Outbound::Vless(vless));
+    }
+    if let Some(vmess) = find_vmess_outbound(root) {
+        return Some(Outbound::Vmess(vmess));
     }
     if let Some(trojan) = find_trojan_outbound(root) {
         return Some(Outbound::Trojan(trojan));
@@ -787,6 +830,45 @@ fn find_vless_outbound(root: &Json) -> Option<VlessOut> {
             id,
             carrier,
             host,
+        });
+    }
+    None
+}
+
+/// First `vmess` outbound's server, user and cipher, `None` otherwise.
+fn find_vmess_outbound(root: &Json) -> Option<VmessOut> {
+    let empty = Vec::new();
+    let outbounds = root
+        .get("outbounds")
+        .and_then(Json::as_arr)
+        .unwrap_or(&empty);
+    for outbound in outbounds {
+        if outbound.get("protocol").and_then(Json::as_str) != Some("vmess") {
+            continue;
+        }
+        let vnext = outbound
+            .get("settings")
+            .and_then(|s| s.get("vnext"))
+            .and_then(Json::as_arr)
+            .and_then(|servers| servers.first());
+        let Some(server) = vnext else { continue };
+        let address = server.get("address").and_then(Json::as_str)?.to_owned();
+        let port = server.get("port").and_then(Json::as_port)?;
+        let user = server
+            .get("users")
+            .and_then(Json::as_arr)
+            .and_then(|users| users.first())?;
+        let id = user.get("id").and_then(Json::as_str).and_then(uuid_bytes)?;
+        let cipher = crate::vmess::Cipher::parse(
+            user.get("security")
+                .and_then(Json::as_str)
+                .unwrap_or("auto"),
+        );
+        return Some(VmessOut {
+            address,
+            port,
+            id,
+            cipher,
         });
     }
     None

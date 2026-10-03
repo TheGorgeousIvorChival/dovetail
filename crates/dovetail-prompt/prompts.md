@@ -743,6 +743,21 @@ Land as one method only: the row, its proof, its gate, the suite flip in `upstre
 
 **Add-on — one-row:** If the row needs a second method to be testable (a carrier for a protocol, a TUN for a relay), record that as a new prompt section rather than widening this one.
 
+## P31 · Timing benchmarks for protocol framings
+
+**When to use:** When a protocol rung needs a wall-clock comparison and only has counts: VMess sealed/open throughput has no timed reference anywhere, only the P30 formula gates, so a framing change that keeps sizes identical while adding passes is invisible.
+**Status:** todo
+**Leverage:** 3
+**Effort:** large
+**Gates:** CI: `bench.yml` green with a protocol framing section that fails on regression on every runner in the matrix; `cargo test --workspace`
+**Depends on:** P30
+**Touches:** crates/dovetail-bench/src/main.rs, .github/workflows/bench.yml
+**Random weight:** 1
+
+```text
+Give the protocol framings a wall-clock comparison with a reference on every ISA runner, the way gate 3 compares the record layer against the chacha20 crate. The obstacle is structural and decided first: framing lives in application crates a bench crate cannot import, and no same-language reference exists for VMess AEAD framing, so this slice decides where the timed code lives and what it is measured against, then gates it with gate 3's remeasure discipline. Counts (P30's formula gates) catch added copies; only timing catches added passes at equal size. Until then the claim stays the narrowed one P30 makes: bit-identical framing with exact sizes, no speed claim.
+```
+
 ## Reading this file as a roadmap
 
 The graph is the point, and it is not a decoration: `dovetail-prompt next` ranks ready slices by leverage, breaks ties towards the smaller one, leaves out the ones waiting on a decision, and reports what each slice unblocks. `P2` is ahead of everything because most of the rest of the roadmap depends on it, which is the kind of thing that is obvious once and invisible otherwise.

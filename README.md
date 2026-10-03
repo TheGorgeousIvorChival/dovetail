@@ -126,7 +126,7 @@ Their ways below are rows to implement, not checkouts to track.
 | 3 | VLESS TCP none, private/loopback only | planned | Xray-core, sing-box, xray-rust (documented TCP subset), PattNG, ZeroNet |
 | 4 | VLESS/TROJAN `security=none` to public (PattNG ext., plaintext) | unsafe opt-in (`allow_plaintext_to_public`) | PattNG only — upstream Xray-core refuses it |
 | 5 | TROJAN TCP TLS | planned (schema reserved) | Xray-core (`proxy/trojan`), sing-box (`protocol/trojan`), PattNG (`TROJAN`), ZeroNet |
-| 6 | VMess TCP (AEAD) | planned (AEAD differential first) | Xray-core (`proxy/vmess`), sing-box (`protocol/vmess`), PattNG (`VMESS`), ZeroNet — xray-rust explicitly has none |
+| 6 | VMess TCP (AEAD) | implemented (`vmess-tcp-aead`) | Xray-core (`proxy/vmess`), sing-box (`protocol/vmess`), PattNG (`VMESS`), ZeroNet — xray-rust explicitly has none |
 | 7 | Shadowsocks TCP/UDP (+2022) | planned (shares the record rung) | Xray-core (`proxy/shadowsocks`, `shadowsocks_2022`), sing-box (`protocol/shadowsocks`), PattNG (`SHADOWSOCKS`), ZeroNet |
 | 8 | VLESS over WS / XHTTP / gRPC / QUIC / HTTPUpgrade / KCP | planned, one rung each, never batched | Xray-core (`transport/internet/{ws,grpc,quic,kcp,httpupgrade}` + `transport/v2ray*`), sing-box (`transport/v2ray*`), PattNG, ZeroNet — xray-rust TCP only |
 | 9 | Hysteria / Hysteria2, TUIC, AnyTLS, ShadowTLS, Snell, Naive, SSH, OpenConnect/OpenVPN | planned | sing-box (`protocol/{hysteria,hysteria2,tuic,anytls,shadowtls,snell,naive,ssh}`), Xray-core (`proxy/hysteria` + `transport/internet/hysteria`), PattNG (`HYSTERIA`, `HYSTERIA2`) |
