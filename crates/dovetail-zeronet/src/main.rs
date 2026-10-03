@@ -20,9 +20,12 @@
 //! connection without it would be a lie the differential test cannot catch.
 //! See `docs/arch/superset.md` for the order.
 
+mod grpc;
+mod httpupgrade;
 mod json;
 mod proxy;
 mod shadowsocks;
+mod ws;
 
 use dovetail_core::transport::Support;
 use std::io::Write as _;
