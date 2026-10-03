@@ -1528,7 +1528,7 @@ mod tests {
         ] {
             let mut stream = TcpStream::connect(("127.0.0.1", port)).expect("connects");
             stream.write_all(&body).expect("writes");
-            stream.shutdown(std::net::Shutdown::Write).expect("shuts");
+            let _ = stream.shutdown(std::net::Shutdown::Write);
             let mut back = [0u8; 1];
             match stream.read(&mut back) {
                 Ok(0) | Err(_) => refused += 1,
