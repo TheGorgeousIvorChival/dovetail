@@ -1368,6 +1368,7 @@ mod tests {
             reader.read_exact(&mut buf).expect("reads");
             assert_eq!(&buf, b"ping");
             assert!(writer.send(b"pong"));
+            drain(&mut reader);
             writer.close();
         });
         let stream = TcpStream::connect(("127.0.0.1", port)).expect("connects");
@@ -1377,7 +1378,15 @@ mod tests {
         let mut buf = [0u8; 4];
         reader.read_exact(&mut buf).expect("reads");
         assert_eq!(&buf, b"pong");
+        writer.close();
+        drain(&mut reader);
         server.join().expect("joins");
+    }
+
+    /// Read until clean `EOF`, consuming handshake acks so both ends close clean.
+    fn drain(reader: &mut GrpcReader) {
+        let mut buf = [0u8; 1024];
+        while reader.read(&mut buf).unwrap_or(0) != 0 {}
     }
 
     #[test]
