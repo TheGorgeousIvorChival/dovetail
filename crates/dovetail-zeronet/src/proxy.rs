@@ -47,14 +47,16 @@ pub(crate) fn serve_file(path: &str) -> ! {
                 "vless" => {
                     let id = inbound_id(inbound);
                     let address_clone = address.clone();
-                    thread::spawn(move || accept_loop(&address_clone, Role::Vless { id, freedom }));
+                    let role = Role::Vless { id, freedom };
+                    thread::spawn(move || accept_loop(&address_clone, &role));
                     inbounds += 1;
                 }
                 "socks" => {
                     let Some(out) = vless_out.clone() else {
                         continue;
                     };
-                    thread::spawn(move || accept_loop(&address, Role::Socks { out }));
+                    let role = Role::Socks { out };
+                    thread::spawn(move || accept_loop(&address, &role));
                     inbounds += 1;
                 }
                 _ => eprintln!("unsupported inbound protocol `{protocol}` in {path}"),
@@ -96,7 +98,7 @@ struct VlessOut {
 }
 
 /// Accept forever, one thread per connection.
-fn accept_loop(address: &str, role: Role) {
+fn accept_loop(address: &str, role: &Role) {
     let listener = TcpListener::bind(address)
         .unwrap_or_else(|error| exit(&format!("cannot listen on {address}: {error}")));
     for stream in listener.incoming() {
@@ -409,7 +411,7 @@ fn x25519_pair() -> (String, String) {
 /// Unpadded base64url, the encoding the oracle keys arrive in.
 fn b64url(bytes: &[u8]) -> String {
     const ALPHABET: &[u8; 64] = b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789-_";
-    let mut out = String::with_capacity((bytes.len() + 2) / 3 * 4);
+    let mut out = String::with_capacity(bytes.len().div_ceil(3) * 4);
     for chunk in bytes.chunks(3) {
         let mut word = 0u32;
         for &byte in chunk {
@@ -417,8 +419,8 @@ fn b64url(bytes: &[u8]) -> String {
         }
         word <<= 8 * (3 - chunk.len());
         let mut shift = 18;
-        for _ in 0..chunk.len() + 1 {
-            out.push(ALPHABET[((word >> shift) & 63) as usize] as char);
+        for _ in 0..=chunk.len() {
+            out.push(ALPHABET[((word >> shift) & 0x3F) as usize] as char);
             shift -= 6;
         }
     }
