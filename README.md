@@ -60,7 +60,7 @@ Four design decisions explain most of the tree.
 | backend | blocks per iteration | registers | Miri |
 | --- | --- | --- | --- |
 | portable `[u32; 4]` | 4 | 16 arrays | yes, in full |
-| NEON `uint32x4_t` | 4 | 16 `q` | no — differential test |
+| NEON `uint32x4_t` | 8 | 32 `q` | no — differential test |
 | SSE2 `__m128i` | 1 (the one-block tail) | 4 `xmm` | yes, in full — interpreted, not yet run |
 | AVX2 `__m256i` | 8 (two states per register) | 16 `ymm` | no — differential test |
 
