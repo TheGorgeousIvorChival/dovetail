@@ -30,7 +30,7 @@ pub(crate) fn serve_file(path: &str) -> ! {
     let root = crate::json::parse(&text)
         .unwrap_or_else(|error| exit(&format!("bad config {path}: {error}")));
     let freedom = has_protocol(&root, "outbounds", "freedom");
-    let vless_out = find_vless_outbound(&root);
+    let outbound = find_outbound(&root);
     let mut inbounds = 0;
     if let Some(list) = root.get("inbounds").and_then(Json::as_arr) {
         for inbound in list {
@@ -51,8 +51,15 @@ pub(crate) fn serve_file(path: &str) -> ! {
                     thread::spawn(move || accept_loop(&address_clone, &role));
                     inbounds += 1;
                 }
+                "trojan" => {
+                    let password = inbound_password(inbound);
+                    let address_clone = address.clone();
+                    let role = Role::Trojan { password, freedom };
+                    thread::spawn(move || accept_loop(&address_clone, &role));
+                    inbounds += 1;
+                }
                 "socks" => {
-                    let Some(out) = vless_out.clone() else {
+                    let Some(out) = outbound.clone() else {
                         continue;
                     };
                     let role = Role::Socks { out };
@@ -82,11 +89,22 @@ fn exit(message: &str) -> ! {
 enum Role {
     /// Accept `VLESS`, dial the requested target itself.
     Vless { id: [u8; 16], freedom: bool },
-    /// Accept `SOCKS5`, relay through the configured `VLESS` server.
-    Socks { out: VlessOut },
+    /// Accept `trojan`, dial the requested target itself.
+    Trojan { password: String, freedom: bool },
+    /// Accept `SOCKS5`, relay through the configured upstream server.
+    Socks { out: Outbound },
 }
 
-/// Where a `socks` inbound forwards: one `vnext` server and its user.
+/// Where a `socks` inbound forwards: one upstream server and its credential.
+#[derive(Debug, Clone)]
+enum Outbound {
+    /// A `vnext` server and its user id bytes.
+    Vless(VlessOut),
+    /// A `trojan` server and its password.
+    Trojan(TrojanOut),
+}
+
+/// A `vless` upstream server.
 #[derive(Debug, Clone)]
 struct VlessOut {
     /// Server host as written.
@@ -95,6 +113,17 @@ struct VlessOut {
     port: u16,
     /// User id bytes.
     id: [u8; 16],
+}
+
+/// A `trojan` upstream server.
+#[derive(Debug, Clone)]
+struct TrojanOut {
+    /// Server host as written.
+    address: String,
+    /// Server port.
+    port: u16,
+    /// Password as written.
+    password: String,
 }
 
 /// Accept forever, one thread per connection.
@@ -106,6 +135,7 @@ fn accept_loop(address: &str, role: &Role) {
         let role = role.clone();
         thread::spawn(move || match role {
             Role::Vless { id, freedom } => serve_vless(stream, &id, freedom),
+            Role::Trojan { password, freedom } => serve_trojan(stream, &password, freedom),
             Role::Socks { out } => serve_socks(stream, &out),
         });
     }
@@ -128,38 +158,73 @@ fn serve_vless(mut stream: TcpStream, id: &[u8; 16], freedom: bool) {
     relay(&stream, &uplink);
 }
 
-/// Serve one `SOCKS5` connection by dialing through the `VLESS` server.
-fn serve_socks(mut client: TcpStream, out: &VlessOut) {
+/// Serve one `trojan` connection: check the password, dial, relay with no reply.
+fn serve_trojan(mut stream: TcpStream, password: &str, freedom: bool) {
+    let Some((cmd, target)) = decode_trojan_request(&mut stream, password) else {
+        return;
+    };
+    if cmd != 1 || !freedom {
+        return;
+    }
+    let Ok(uplink) = TcpStream::connect_timeout(&target, Duration::from_secs(8)) else {
+        return;
+    };
+    relay(&stream, &uplink);
+}
+
+/// Serve one `SOCKS5` connection by dialing through the upstream server.
+fn serve_socks(mut client: TcpStream, out: &Outbound) {
     let Some(target) = socks_handshake(&mut client) else {
         return;
     };
-    let address = format!("{}:{}", out.address, out.port);
-    let server = address.to_socket_addrs().ok().and_then(|mut it| it.next());
+    let (address, port) = match out {
+        Outbound::Vless(vless) => (vless.address.clone(), vless.port),
+        Outbound::Trojan(trojan) => (trojan.address.clone(), trojan.port),
+    };
+    let dial = format!("{address}:{port}");
+    let server = dial.to_socket_addrs().ok().and_then(|mut it| it.next());
     let Some(server) = server else { return };
     let Ok(mut uplink) = TcpStream::connect_timeout(&server, Duration::from_secs(8)) else {
         return;
     };
-    let mut header = Vec::with_capacity(30);
-    header.push(0);
-    header.extend_from_slice(&out.id);
-    header.push(0);
-    header.push(1);
-    header.extend_from_slice(&target.port().to_be_bytes());
-    push_addr(&mut header, &target);
-    if uplink.write_all(&header).is_err() {
-        return;
-    }
-    let mut prefix = [0u8; 2];
-    if read_exact(&mut uplink, &mut prefix).is_err() {
-        return;
-    }
-    let Ok(consumed) = dovetail_core::vless::VlessLink::decode_response_header(&prefix) else {
-        return;
-    };
-    if consumed > 2 {
-        let mut rest = vec![0u8; consumed - 2];
-        if read_exact(&mut uplink, &mut rest).is_err() {
-            return;
+    match out {
+        Outbound::Vless(vless) => {
+            let mut header = Vec::with_capacity(30);
+            header.push(0);
+            header.extend_from_slice(&vless.id);
+            header.push(0);
+            header.push(1);
+            header.extend_from_slice(&target.port().to_be_bytes());
+            push_addr(&mut header, &target, 3);
+            if uplink.write_all(&header).is_err() {
+                return;
+            }
+            let mut prefix = [0u8; 2];
+            if read_exact(&mut uplink, &mut prefix).is_err() {
+                return;
+            }
+            let Ok(consumed) = dovetail_core::vless::VlessLink::decode_response_header(&prefix)
+            else {
+                return;
+            };
+            if consumed > 2 {
+                let mut rest = vec![0u8; consumed - 2];
+                if read_exact(&mut uplink, &mut rest).is_err() {
+                    return;
+                }
+            }
+        }
+        Outbound::Trojan(trojan) => {
+            let mut header = Vec::with_capacity(70);
+            header.extend_from_slice(&trojan_key(&trojan.password));
+            header.extend_from_slice(b"\r\n");
+            header.push(1);
+            push_addr(&mut header, &target, 4);
+            header.extend_from_slice(&target.port().to_be_bytes());
+            header.extend_from_slice(b"\r\n");
+            if uplink.write_all(&header).is_err() {
+                return;
+            }
         }
     }
     relay(&client, &uplink);
@@ -228,45 +293,80 @@ fn decode_request(stream: &mut TcpStream) -> Option<([u8; 16], u8, SocketAddr)> 
     Some((id, cmd[0], target))
 }
 
-/// Read one `atyp` address for a known port.
+/// Decode a `trojan` request: key, `CRLF`, command, `SOCKS`-order address, `CRLF`.
+fn decode_trojan_request(stream: &mut TcpStream, password: &str) -> Option<(u8, SocketAddr)> {
+    let mut key = [0u8; 56];
+    read_exact(stream, &mut key).ok()?;
+    if key != trojan_key(password) {
+        return None;
+    }
+    let mut crlf = [0u8; 2];
+    read_exact(stream, &mut crlf).ok()?;
+    if crlf != *b"\r\n" {
+        return None;
+    }
+    let mut cmd = [0u8; 1];
+    read_exact(stream, &mut cmd).ok()?;
+    let target = read_socks_addr(stream)?;
+    read_exact(stream, &mut crlf).ok()?;
+    if crlf != *b"\r\n" {
+        return None;
+    }
+    Some((cmd[0], target))
+}
+
+/// Read one `VLESS` address (`1`/`2`/`3`) for a known port.
 fn read_addr(stream: &mut TcpStream, port: u16) -> Option<SocketAddr> {
     let mut atyp = [0u8; 1];
     read_exact(stream, &mut atyp).ok()?;
-    match atyp[0] {
-        1 => {
-            let mut ip = [0u8; 4];
-            read_exact(stream, &mut ip).ok()?;
-            Some(SocketAddr::new(std::net::IpAddr::V4(ip.into()), port))
-        }
-        2 => {
-            let mut len = [0u8; 1];
-            read_exact(stream, &mut len).ok()?;
-            let mut name = vec![0u8; usize::from(len[0])];
-            read_exact(stream, &mut name).ok()?;
-            let host = String::from_utf8(name).ok()?;
-            format!("{host}:{port}").to_socket_addrs().ok()?.next()
-        }
-        3 => {
-            let mut ip = [0u8; 16];
-            read_exact(stream, &mut ip).ok()?;
-            Some(SocketAddr::new(std::net::IpAddr::V6(ip.into()), port))
-        }
-        _ => None,
+    if atyp[0] == 1 {
+        let mut ip = [0u8; 4];
+        read_exact(stream, &mut ip).ok()?;
+        return Some(SocketAddr::new(std::net::IpAddr::V4(ip.into()), port));
     }
+    if atyp[0] == 3 {
+        let mut ip = [0u8; 16];
+        read_exact(stream, &mut ip).ok()?;
+        return Some(SocketAddr::new(std::net::IpAddr::V6(ip.into()), port));
+    }
+    if atyp[0] != 2 {
+        return None;
+    }
+    let mut len = [0u8; 1];
+    read_exact(stream, &mut len).ok()?;
+    let mut name = vec![0u8; usize::from(len[0])];
+    read_exact(stream, &mut name).ok()?;
+    let host = String::from_utf8(name).ok()?;
+    format!("{host}:{port}").to_socket_addrs().ok()?.next()
 }
 
-/// Append `atyp` plus address bytes for a socket address.
-fn push_addr(header: &mut Vec<u8>, target: &SocketAddr) {
+/// Append `atyp` plus address bytes for a socket address; `v6` tags `IPv6`.
+fn push_addr(header: &mut Vec<u8>, target: &SocketAddr, v6: u8) {
     match target.ip() {
         std::net::IpAddr::V4(ip) => {
             header.push(1);
             header.extend_from_slice(&ip.octets());
         }
         std::net::IpAddr::V6(ip) => {
-            header.push(3);
+            header.push(v6);
             header.extend_from_slice(&ip.octets());
         }
     }
+}
+
+/// Hex digits for password hashing.
+const HEX: &[u8; 16] = b"0123456789abcdef";
+
+/// Lowercase hex `SHA224` of a password: the 56-byte `trojan` key.
+fn trojan_key(password: &str) -> [u8; 56] {
+    use sha2::Digest as _;
+    let digest = sha2::Sha224::digest(password.as_bytes());
+    let mut out = [0u8; 56];
+    for (i, byte) in digest.iter().enumerate() {
+        out[2 * i] = HEX[(byte >> 4) as usize];
+        out[2 * i + 1] = HEX[(byte & 0x0F) as usize];
+    }
+    out
 }
 
 /// Accept a `SOCKS5` `CONNECT`, returning the requested target.
@@ -286,40 +386,58 @@ fn socks_handshake(client: &mut TcpStream) -> Option<SocketAddr> {
     if req[0] != 5 || req[1] != 1 {
         return None;
     }
-    let target = match req[3] {
-        1 => {
-            let mut ip = [0u8; 4];
-            read_exact(client, &mut ip).ok()?;
-            let mut port = [0u8; 2];
-            read_exact(client, &mut port).ok()?;
-            SocketAddr::new(std::net::IpAddr::V4(ip.into()), u16::from_be_bytes(port))
-        }
-        3 => {
-            let mut len = [0u8; 1];
-            read_exact(client, &mut len).ok()?;
-            let mut name = vec![0u8; usize::from(len[0])];
-            read_exact(client, &mut name).ok()?;
-            let mut port = [0u8; 2];
-            read_exact(client, &mut port).ok()?;
-            let host = String::from_utf8(name).ok()?;
-            format!("{host}:{}", u16::from_be_bytes(port))
-                .to_socket_addrs()
-                .ok()?
-                .next()?
-        }
-        4 => {
-            let mut ip = [0u8; 16];
-            read_exact(client, &mut ip).ok()?;
-            let mut port = [0u8; 2];
-            read_exact(client, &mut port).ok()?;
-            SocketAddr::new(std::net::IpAddr::V6(ip.into()), u16::from_be_bytes(port))
-        }
-        _ => return None,
-    };
+    let target = read_socks_addr_rest(client, req[3])?;
     if client.write_all(&[5, 0, 0, 1, 0, 0, 0, 0, 0, 0]).is_err() {
         return None;
     }
     Some(target)
+}
+
+/// Read a `SOCKS`-order address (`atyp`, address, port) from the stream.
+fn read_socks_addr(stream: &mut TcpStream) -> Option<SocketAddr> {
+    let mut atyp = [0u8; 1];
+    read_exact(stream, &mut atyp).ok()?;
+    read_socks_addr_rest(stream, atyp[0])
+}
+
+/// Read the address and port after a `SOCKS`-order `atyp` byte.
+fn read_socks_addr_rest(stream: &mut TcpStream, atyp: u8) -> Option<SocketAddr> {
+    match atyp {
+        1 => {
+            let mut ip = [0u8; 4];
+            read_exact(stream, &mut ip).ok()?;
+            let mut port = [0u8; 2];
+            read_exact(stream, &mut port).ok()?;
+            Some(SocketAddr::new(
+                std::net::IpAddr::V4(ip.into()),
+                u16::from_be_bytes(port),
+            ))
+        }
+        3 => {
+            let mut len = [0u8; 1];
+            read_exact(stream, &mut len).ok()?;
+            let mut name = vec![0u8; usize::from(len[0])];
+            read_exact(stream, &mut name).ok()?;
+            let mut port = [0u8; 2];
+            read_exact(stream, &mut port).ok()?;
+            let host = String::from_utf8(name).ok()?;
+            format!("{host}:{}", u16::from_be_bytes(port))
+                .to_socket_addrs()
+                .ok()?
+                .next()
+        }
+        4 => {
+            let mut ip = [0u8; 16];
+            read_exact(stream, &mut ip).ok()?;
+            let mut port = [0u8; 2];
+            read_exact(stream, &mut port).ok()?;
+            Some(SocketAddr::new(
+                std::net::IpAddr::V6(ip.into()),
+                u16::from_be_bytes(port),
+            ))
+        }
+        _ => None,
+    }
 }
 
 /// First inbound `vless` client's id bytes, zeros when unparseable.
@@ -342,6 +460,56 @@ fn has_protocol(root: &Json, array: &str, protocol: &str) -> bool {
             .iter()
             .any(|item| item.get("protocol").and_then(Json::as_str) == Some(protocol))
     })
+}
+
+/// First inbound `trojan` client's password, empty when unparseable.
+fn inbound_password(inbound: &Json) -> String {
+    inbound
+        .get("settings")
+        .and_then(|s| s.get("clients"))
+        .and_then(Json::as_arr)
+        .and_then(|clients| clients.first())
+        .and_then(|client| client.get("password"))
+        .and_then(Json::as_str)
+        .unwrap_or("")
+        .to_owned()
+}
+
+/// First non-`freedom` outbound, `vless` before `trojan`, `None` when neither fits.
+fn find_outbound(root: &Json) -> Option<Outbound> {
+    if let Some(vless) = find_vless_outbound(root) {
+        return Some(Outbound::Vless(vless));
+    }
+    find_trojan_outbound(root).map(Outbound::Trojan)
+}
+
+/// First `trojan` outbound's server and password, `None` when the shape differs.
+fn find_trojan_outbound(root: &Json) -> Option<TrojanOut> {
+    let empty = Vec::new();
+    let outbounds = root
+        .get("outbounds")
+        .and_then(Json::as_arr)
+        .unwrap_or(&empty);
+    for outbound in outbounds {
+        if outbound.get("protocol").and_then(Json::as_str) != Some("trojan") {
+            continue;
+        }
+        let server = outbound
+            .get("settings")
+            .and_then(|s| s.get("servers"))
+            .and_then(Json::as_arr)
+            .and_then(|servers| servers.first());
+        let Some(server) = server else { continue };
+        let address = server.get("address").and_then(Json::as_str)?.to_owned();
+        let port = server.get("port").and_then(Json::as_port)?;
+        let password = server.get("password").and_then(Json::as_str)?.to_owned();
+        return Some(TrojanOut {
+            address,
+            port,
+            password,
+        });
+    }
+    None
 }
 
 /// First `vless` outbound's server and user, `None` when the shape differs.
@@ -483,6 +651,49 @@ mod tests {
         assert_eq!(cmd, 1);
         assert_eq!(target.to_string(), "192.0.2.53:80");
         drop(reader);
+    }
+
+    #[test]
+    fn trojan_key_is_sha224_hex() {
+        assert_eq!(
+            trojan_key("an-example-shared-password"),
+            *b"73317e3bf920a459723610d27b71cadc07061d8f0d8587e041944896"
+        );
+    }
+
+    #[test]
+    fn trojan_relay_round_trips_and_refuses_strangers() {
+        let echo = TcpListener::bind("127.0.0.1:0").expect("binds");
+        let echo_port = echo.local_addr().expect("addr").port();
+        thread::spawn(move || {
+            let (stream, _) = echo.accept().expect("accepts");
+            relay(&stream, &stream);
+        });
+        let server = TcpListener::bind("127.0.0.1:0").expect("binds");
+        let port = server.local_addr().expect("addr").port();
+        thread::spawn(move || {
+            for stream in server.incoming().take(2) {
+                let Ok(stream) = stream else { continue };
+                thread::spawn(move || serve_trojan(stream, "an-example-shared-password", true));
+            }
+        });
+        let mut good = TcpStream::connect(("127.0.0.1", port)).expect("connects");
+        let mut header = Vec::new();
+        header.extend_from_slice(&trojan_key("an-example-shared-password"));
+        header.extend_from_slice(b"\r\n\x01\x01\x7f\x00\x00\x01");
+        header.extend_from_slice(&echo_port.to_be_bytes());
+        header.extend_from_slice(b"\r\n");
+        good.write_all(&header).expect("writes");
+        good.write_all(b"ping").expect("writes");
+        let mut back = [0u8; 4];
+        good.read_exact(&mut back).expect("echoes");
+        assert_eq!(&back, b"ping");
+        let mut bad = TcpStream::connect(("127.0.0.1", port)).expect("connects");
+        bad.write_all(&[0u8; 64]).expect("writes");
+        let mut closed = [0u8; 1];
+        assert!(bad.read(&mut closed).is_err() || closed == [0]);
+        drop(good);
+        drop(bad);
     }
 
     #[test]
