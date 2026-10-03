@@ -11,8 +11,12 @@ description = "ZeroNet-compatible application built on the released dovetail-cor
 workspace = true
 
 [dependencies]
+# Single-block cipher for `VMess` auth ids.
+aes = "0.8"
 # AEAD for the `shadowsocks` chunk transport (`aes-256-gcm` only).
 aes-gcm = "0.10"
+# Data frames for the `VMess` rung (`auto` negotiates this).
+chacha20poly1305 = "0.10"
 # The ZeroNet app on the *released* core: `version = "0.1.0"` is the requirement
 # (see the workspace `dovetail-core` entry) and `path` is the checkout fallback
 # so this builds without a registry. Releasing `dovetail-core 0.1.0` keeps this
@@ -28,6 +32,8 @@ hkdf = "0.12"
 md5 = "0.7"
 # Hash behind the `shadowsocks` subkey derivation.
 sha1 = "0.10"
+# Length masking stream for the `VMess` rung (`SHAKE128`).
+sha3 = "0.10"
 # Password hashing for the `trojan` handshake (`SHA224`, hex).
 sha2 = "0.10"
 # Real X25519 for the `x25519` subcommand the oracle seams call for keys.

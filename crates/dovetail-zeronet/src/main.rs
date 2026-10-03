@@ -25,6 +25,7 @@ mod httpupgrade;
 mod json;
 mod proxy;
 mod shadowsocks;
+mod vmess;
 mod ws;
 
 use dovetail_core::transport::Support;

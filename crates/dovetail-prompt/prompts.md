@@ -725,7 +725,7 @@ Flip the `xray-rust` pin to `test_enabled = true` with `dovetail_binary = "dovet
 ## P30 · Implement one README connection method end to end
 
 **When to use:** When exactly one unchecked row of the README connection-methods matrix is the next box to check, and the point is the whole box — both roles, the proof, the gate, the flipped cell — not a first half of it.
-**Status:** todo
+**Status:** done
 **Leverage:** 5
 **Effort:** large
 **Gates:** `cargo test --workspace`; CI: `conformance.yml` green with the row's upstream suites executed unmodified against the Dovetail binary plus the extra differential tests below, and the README cell flipped with the run that backs it
@@ -742,6 +742,21 @@ Land as one method only: the row, its proof, its gate, the suite flip in `upstre
 ```
 
 **Add-on — one-row:** If the row needs a second method to be testable (a carrier for a protocol, a TUN for a relay), record that as a new prompt section rather than widening this one.
+
+## P31 · Timing benchmarks for protocol framings
+
+**When to use:** When a protocol rung needs a wall-clock comparison and only has counts: VMess sealed/open throughput has no timed reference anywhere, only the P30 formula gates, so a framing change that keeps sizes identical while adding passes is invisible.
+**Status:** todo
+**Leverage:** 3
+**Effort:** large
+**Gates:** CI: `bench.yml` green with a protocol framing section that fails on regression on every runner in the matrix; `cargo test --workspace`
+**Depends on:** P30
+**Touches:** crates/dovetail-bench/src/main.rs, .github/workflows/bench.yml
+**Random weight:** 1
+
+```text
+Give the protocol framings a wall-clock comparison with a reference on every ISA runner, the way gate 3 compares the record layer against the chacha20 crate. The obstacle is structural and decided first: framing lives in application crates a bench crate cannot import, and no same-language reference exists for VMess AEAD framing, so this slice decides where the timed code lives and what it is measured against, then gates it with gate 3's remeasure discipline. Counts (P30's formula gates) catch added copies; only timing catches added passes at equal size. Until then the claim stays the narrowed one P30 makes: bit-identical framing with exact sizes, no speed claim.
+```
 
 ## Reading this file as a roadmap
 

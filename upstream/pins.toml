@@ -97,10 +97,10 @@ rev           = "97a99734e95029c8bf90ab0cdc578d0561a57724"
 default_branch = "main"
 path          = "crates"
 test_enabled  = true
-suite         = "cargo test -p zero-runtime --test xray_oracle -- --ignored --test-threads=1 vless_over_raw_tcp_matches_the_oracle trojan_over_raw_tcp_matches_the_oracle shadowsocks_over_raw_tcp_matches_the_oracle vless_over_websocket_matches_the_oracle vless_over_http_upgrade_matches_the_oracle vless_over_grpc_matches_the_oracle"
+suite         = "cargo test -p zero-runtime --test xray_oracle -- --ignored --test-threads=1 vless_over_raw_tcp_matches_the_oracle trojan_over_raw_tcp_matches_the_oracle shadowsocks_over_raw_tcp_matches_the_oracle vless_over_websocket_matches_the_oracle vless_over_http_upgrade_matches_the_oracle vless_over_grpc_matches_the_oracle vmess_over_raw_tcp_matches_the_oracle"
 dovetail_binary = "dovetail-zeronet"
 seam           = "ZRAY_XRAY_BINARY"
-note          = "MIT-licensed Zray core + TUI + Android app; dovetail-zeronet builds the same app surface on dovetail-core. Enabled as the raw-TCP VLESS, trojan and shadowsocks plus VLESS-over-websocket, httpupgrade and grpc subset (P19, P24, P26, P27, P28); the other three oracle tests need rungs this binary closes on, and stay disabled by name in docs/conformance.md"
+note          = "MIT-licensed Zray core + TUI + Android app; dovetail-zeronet builds the same app surface on dovetail-core. Enabled as the raw-TCP VLESS, trojan, shadowsocks and vmess plus VLESS-over-websocket, httpupgrade and grpc subset (P19, P24, P26, P27, P28, P30); the other two oracle tests need rungs this binary closes on, and stay disabled by name in docs/conformance.md"
 
 [sources.mqvpn]
 repo          = "https://github.com/mp0rta/mqvpn"
