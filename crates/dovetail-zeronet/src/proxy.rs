@@ -46,8 +46,13 @@ pub(crate) fn serve_file(path: &str) -> ! {
             match protocol {
                 "vless" => {
                     let id = inbound_id(inbound);
+                    let carrier = inbound_carrier(inbound);
                     let address_clone = address.clone();
-                    let role = Role::Vless { id, freedom };
+                    let role = Role::Vless {
+                        id,
+                        carrier,
+                        freedom,
+                    };
                     thread::spawn(move || accept_loop(&address_clone, &role));
                     inbounds += 1;
                 }
@@ -100,7 +105,11 @@ fn exit(message: &str) -> ! {
 #[derive(Debug, Clone)]
 enum Role {
     /// Accept `VLESS`, dial the requested target itself.
-    Vless { id: [u8; 16], freedom: bool },
+    Vless {
+        id: [u8; 16],
+        carrier: Carrier,
+        freedom: bool,
+    },
     /// Accept `trojan`, dial the requested target itself.
     Trojan { password: String, freedom: bool },
     /// Accept `shadowsocks`, dial the requested target itself.
@@ -133,6 +142,23 @@ struct VlessOut {
     port: u16,
     /// User id bytes.
     id: [u8; 16],
+    /// Carrier around unchanged `VLESS` bytes, raw `TCP` when unnamed.
+    carrier: Carrier,
+    /// `Host` header as written, falling back to the server address.
+    host: String,
+}
+
+/// Framing around unchanged `VLESS` bytes, read once from `streamSettings`.
+#[derive(Debug, Clone)]
+enum Carrier {
+    /// Raw `TCP`, the default when nothing else is named.
+    Raw,
+    /// `WebSocket` upgrade at this path.
+    Ws { path: String },
+    /// `HTTPUpgrade` at this path, raw bytes after the `101`.
+    HttpUpgrade { path: String },
+    /// `gRPC` tunnel at this service path.
+    Grpc { path: String },
 }
 
 /// A `trojan` upstream server.
@@ -167,7 +193,11 @@ fn accept_loop(address: &str, role: &Role) {
         let Ok(stream) = stream else { continue };
         let role = role.clone();
         thread::spawn(move || match role {
-            Role::Vless { id, freedom } => serve_vless(stream, &id, freedom),
+            Role::Vless {
+                id,
+                carrier,
+                freedom,
+            } => serve_vless(stream, &id, &carrier, freedom),
             Role::Trojan { password, freedom } => serve_trojan(stream, &password, freedom),
             Role::Shadowsocks {
                 password,
@@ -179,8 +209,69 @@ fn accept_loop(address: &str, role: &Role) {
     }
 }
 
+/// Serve one `VLESS` connection: raw `TCP` by default, framed when named.
+fn serve_vless(stream: TcpStream, id: &[u8; 16], carrier: &Carrier, freedom: bool) {
+    match carrier {
+        Carrier::Raw => serve_vless_raw(stream, id, freedom),
+        Carrier::Ws { path } => {
+            let Some((mut reader, writer)) = crate::ws::accept(stream, path) else {
+                return;
+            };
+            let Some((got, cmd, target)) = decode_request(&mut reader) else {
+                return;
+            };
+            if got != *id || cmd != 1 || !freedom {
+                return;
+            }
+            let Ok(uplink) = TcpStream::connect_timeout(&target, Duration::from_secs(8)) else {
+                return;
+            };
+            if !writer.send(&[0, 0]) {
+                return;
+            }
+            crate::ws::relay(reader, &writer, &uplink);
+        }
+        Carrier::HttpUpgrade { path } => {
+            let Some((mut reader, mut write)) = crate::httpupgrade::accept(stream, path) else {
+                return;
+            };
+            let Some((got, cmd, target)) = decode_request(&mut reader) else {
+                return;
+            };
+            if got != *id || cmd != 1 || !freedom {
+                return;
+            }
+            let Ok(uplink) = TcpStream::connect_timeout(&target, Duration::from_secs(8)) else {
+                return;
+            };
+            if write.write_all(&[0, 0]).is_err() {
+                return;
+            }
+            crate::httpupgrade::relay(reader, &write, &uplink);
+        }
+        Carrier::Grpc { path } => {
+            let Some((mut reader, writer)) = crate::grpc::accept(stream, path) else {
+                return;
+            };
+            let Some((got, cmd, target)) = decode_request(&mut reader) else {
+                return;
+            };
+            if got != *id || cmd != 1 || !freedom {
+                return;
+            }
+            let Ok(uplink) = TcpStream::connect_timeout(&target, Duration::from_secs(8)) else {
+                return;
+            };
+            if !writer.send(&[0, 0]) {
+                return;
+            }
+            crate::grpc::relay(reader, &writer, &uplink);
+        }
+    }
+}
+
 /// Serve one `VLESS`/`TCP` connection: check the user, dial, answer `[0, 0]`, relay.
-fn serve_vless(mut stream: TcpStream, id: &[u8; 16], freedom: bool) {
+fn serve_vless_raw(mut stream: TcpStream, id: &[u8; 16], freedom: bool) {
     let Some((got, cmd, target)) = decode_request(&mut stream) else {
         return;
     };
@@ -194,6 +285,66 @@ fn serve_vless(mut stream: TcpStream, id: &[u8; 16], freedom: bool) {
         return;
     }
     relay(&stream, &uplink);
+}
+
+/// Dial one `vless` upstream for a `SOCKS` target, over whatever carrier is named.
+fn dial_vless(client: &TcpStream, mut uplink: TcpStream, vless: &VlessOut, target: &SocketAddr) {
+    let mut header = Vec::with_capacity(30);
+    header.push(0);
+    header.extend_from_slice(&vless.id);
+    header.push(0);
+    header.push(1);
+    header.extend_from_slice(&target.port().to_be_bytes());
+    push_addr(&mut header, target, 3);
+    match &vless.carrier {
+        Carrier::Ws { path } => {
+            let Some((mut reader, writer)) = crate::ws::connect(uplink, &vless.host, path) else {
+                return;
+            };
+            if !writer.send(&header) {
+                return;
+            }
+            if read_vless_response(&mut reader).is_none() {
+                return;
+            }
+            crate::ws::relay(reader, &writer, client);
+        }
+        Carrier::HttpUpgrade { path } => {
+            let Some((mut reader, mut write)) =
+                crate::httpupgrade::connect(uplink, &vless.host, path)
+            else {
+                return;
+            };
+            if write.write_all(&header).is_err() {
+                return;
+            }
+            if read_vless_response(&mut reader).is_none() {
+                return;
+            }
+            crate::httpupgrade::relay(reader, &write, client);
+        }
+        Carrier::Grpc { path } => {
+            let Some((mut reader, writer)) = crate::grpc::connect(uplink, &vless.host, path) else {
+                return;
+            };
+            if !writer.send(&header) {
+                return;
+            }
+            if read_vless_response(&mut reader).is_none() {
+                return;
+            }
+            crate::grpc::relay(reader, &writer, client);
+        }
+        Carrier::Raw => {
+            if uplink.write_all(&header).is_err() {
+                return;
+            }
+            if read_vless_response(&mut uplink).is_none() {
+                return;
+            }
+            relay(client, &uplink);
+        }
+    }
 }
 
 /// Serve one `trojan` connection: check the password, dial, relay with no reply.
@@ -227,33 +378,7 @@ fn serve_socks(mut client: TcpStream, out: &Outbound) {
         return;
     };
     match out {
-        Outbound::Vless(vless) => {
-            let mut header = Vec::with_capacity(30);
-            header.push(0);
-            header.extend_from_slice(&vless.id);
-            header.push(0);
-            header.push(1);
-            header.extend_from_slice(&target.port().to_be_bytes());
-            push_addr(&mut header, &target, 3);
-            if uplink.write_all(&header).is_err() {
-                return;
-            }
-            let mut prefix = [0u8; 2];
-            if read_exact(&mut uplink, &mut prefix).is_err() {
-                return;
-            }
-            let Ok(consumed) = dovetail_core::vless::VlessLink::decode_response_header(&prefix)
-            else {
-                return;
-            };
-            if consumed > 2 {
-                let mut rest = vec![0u8; consumed - 2];
-                if read_exact(&mut uplink, &mut rest).is_err() {
-                    return;
-                }
-            }
-            relay(&client, &uplink);
-        }
+        Outbound::Vless(vless) => dial_vless(&client, uplink, vless, &target),
         Outbound::Trojan(trojan) => {
             let mut header = Vec::with_capacity(70);
             header.extend_from_slice(&trojan_key(&trojan.password));
@@ -322,8 +447,20 @@ pub(crate) fn read_exact(stream: &mut dyn Read, mut buf: &mut [u8]) -> std::io::
     Ok(())
 }
 
+/// Read one `VLESS` response header off the stream, `None` on any mismatch.
+fn read_vless_response(stream: &mut dyn Read) -> Option<()> {
+    let mut prefix = [0u8; 2];
+    read_exact(stream, &mut prefix).ok()?;
+    let consumed = dovetail_core::vless::VlessLink::decode_response_header(&prefix).ok()?;
+    if consumed > 2 {
+        let mut rest = vec![0u8; consumed - 2];
+        read_exact(stream, &mut rest).ok()?;
+    }
+    Some(())
+}
+
 /// Decode a client request header from the stream: `(id, command, target)`.
-fn decode_request(stream: &mut TcpStream) -> Option<([u8; 16], u8, SocketAddr)> {
+fn decode_request(stream: &mut dyn Read) -> Option<([u8; 16], u8, SocketAddr)> {
     let mut head = [0u8; 18];
     read_exact(stream, &mut head).ok()?;
     if head[0] != 0 {
@@ -367,7 +504,7 @@ fn decode_trojan_request(stream: &mut TcpStream, password: &str) -> Option<(u8, 
 }
 
 /// Read one `VLESS` address (`1`/`2`/`3`) for a known port.
-fn read_addr(stream: &mut TcpStream, port: u16) -> Option<SocketAddr> {
+fn read_addr(stream: &mut dyn Read, port: u16) -> Option<SocketAddr> {
     let mut atyp = [0u8; 1];
     read_exact(stream, &mut atyp).ok()?;
     if atyp[0] == 1 {
@@ -643,9 +780,86 @@ fn find_vless_outbound(root: &Json) -> Option<VlessOut> {
             .and_then(|user| user.get("id"))
             .and_then(Json::as_str)
             .and_then(uuid_bytes)?;
-        return Some(VlessOut { address, port, id });
+        let (carrier, host) = outbound_carrier(outbound, &address);
+        return Some(VlessOut {
+            address,
+            port,
+            id,
+            carrier,
+            host,
+        });
     }
     None
+}
+
+/// Carrier from a `streamSettings` block, raw `TCP` when nothing is named.
+fn stream_carrier(settings: Option<&Json>) -> Carrier {
+    match settings
+        .and_then(|s| s.get("network"))
+        .and_then(Json::as_str)
+    {
+        Some("ws") => Carrier::Ws {
+            path: sub_path(settings, "wsSettings"),
+        },
+        Some("httpupgrade") => Carrier::HttpUpgrade {
+            path: sub_path(settings, "httpupgradeSettings"),
+        },
+        Some("grpc") => Carrier::Grpc {
+            path: grpc_path(settings),
+        },
+        _ => Carrier::Raw,
+    }
+}
+
+/// Upgrade path from a settings block, `/` when unnamed.
+fn sub_path(settings: Option<&Json>, key: &str) -> String {
+    settings
+        .and_then(|s| s.get(key))
+        .and_then(|s| s.get("path"))
+        .and_then(Json::as_str)
+        .unwrap_or("/")
+        .to_owned()
+}
+
+/// `gRPC` service path from `serviceName`, `/<service>/Tun` like every peer.
+fn grpc_path(settings: Option<&Json>) -> String {
+    let service = settings
+        .and_then(|s| s.get("grpcSettings"))
+        .and_then(|s| s.get("serviceName"))
+        .and_then(Json::as_str)
+        .unwrap_or("")
+        .trim();
+    if service.is_empty() {
+        return "/Tun".to_owned();
+    }
+    if service.starts_with('/') {
+        return service.to_owned();
+    }
+    format!("/{}/Tun", service.trim_matches('/'))
+}
+
+/// Carrier plus `Host` from an outbound's `streamSettings`, raw by default.
+fn outbound_carrier(outbound: &Json, address: &str) -> (Carrier, String) {
+    let settings = outbound.get("streamSettings");
+    let carrier = stream_carrier(settings);
+    let key = match &carrier {
+        Carrier::Ws { .. } => "wsSettings",
+        Carrier::HttpUpgrade { .. } => "httpupgradeSettings",
+        Carrier::Grpc { .. } => "grpcSettings",
+        Carrier::Raw => "",
+    };
+    let host = settings
+        .and_then(|s| s.get(key))
+        .and_then(|s| s.get("host"))
+        .and_then(Json::as_str)
+        .unwrap_or(address)
+        .to_owned();
+    (carrier, host)
+}
+
+/// Carrier from an inbound's `streamSettings`, raw `TCP` when unnamed.
+fn inbound_carrier(inbound: &Json) -> Carrier {
+    stream_carrier(inbound.get("streamSettings"))
 }
 
 /// Lowercase-hex `8-4-4-4-12` UUID to bytes, `None` on any other shape.
