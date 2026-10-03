@@ -80,7 +80,8 @@ pub(crate) fn client_send_handshake(
     let mut addr = Vec::with_capacity(20);
     push_addr(&mut addr, target, 4);
     addr.extend_from_slice(&target.port().to_be_bytes());
-    seal_all(&mut send, &addr, uplink).ok()?;
+    let mut staging = Vec::with_capacity(addr.len());
+    seal_all(&mut send, &addr, &mut staging, uplink).ok()?;
     Some((send, Recv::Waiting(master)))
 }
 
@@ -113,11 +114,12 @@ pub(crate) fn pump_relay(plain: &TcpStream, sealed: &TcpStream, send: Cipher, re
     let mut send = send;
     let done = thread::spawn(move || {
         let mut buf = vec![0u8; READ_CHUNK];
+        let mut staging = Vec::with_capacity(MAX_CHUNK);
         while let Ok(read) = plain_read.read(&mut buf) {
             if read == 0 {
                 break;
             }
-            if seal_all(&mut send, &buf[..read], &mut sealed_write).is_err() {
+            if seal_all(&mut send, &buf[..read], &mut staging, &mut sealed_write).is_err() {
                 break;
             }
         }
@@ -191,23 +193,36 @@ fn master_key(password: &str) -> [u8; 32] {
 }
 
 /// Seal every `MAX_CHUNK` slice of plaintext into length-plus-payload chunks.
-fn seal_all(send: &mut Cipher, plain: &[u8], out: &mut dyn Write) -> std::io::Result<()> {
+fn seal_all(
+    send: &mut Cipher,
+    plain: &[u8],
+    staging: &mut Vec<u8>,
+    out: &mut dyn Write,
+) -> std::io::Result<()> {
     for chunk in plain.chunks(MAX_CHUNK) {
-        seal_into(send, &(chunk.len() as u16).to_be_bytes(), out)?;
-        seal_into(send, chunk, out)?;
+        seal_into(send, &(chunk.len() as u16).to_be_bytes(), staging, out)?;
+        seal_into(send, chunk, staging, out)?;
     }
     Ok(())
 }
 
-/// Seal one plaintext slice plus its tag onto the stream.
-fn seal_into(send: &mut Cipher, plain: &[u8], out: &mut dyn Write) -> std::io::Result<()> {
+/// Seal one plaintext slice plus its tag onto the stream, staging through the
+/// caller's buffer: the old per-chunk `to_vec` allocated and copied every
+/// chunk on the way out, and `staging` is already warm after the first one.
+fn seal_into(
+    send: &mut Cipher,
+    plain: &[u8],
+    staging: &mut Vec<u8>,
+    out: &mut dyn Write,
+) -> std::io::Result<()> {
     let nonce = send.nonce();
-    let mut buf = plain.to_vec();
+    staging.clear();
+    staging.extend_from_slice(plain);
     let tag = send
         .cipher
-        .encrypt_in_place_detached(Nonce::from_slice(&nonce), b"", &mut buf)
+        .encrypt_in_place_detached(Nonce::from_slice(&nonce), b"", staging)
         .map_err(|_| std::io::Error::from(std::io::ErrorKind::InvalidData))?;
-    out.write_all(&buf)?;
+    out.write_all(staging)?;
     out.write_all(&tag)?;
     Ok(())
 }
@@ -327,7 +342,8 @@ mod tests {
         let salt = [7u8; SALT_LEN];
         let mut send = Cipher::new(&master, &salt).expect("derives");
         let mut wire = Vec::new();
-        seal_all(&mut send, b"length-is-framing", &mut wire).expect("seals");
+        let mut staging = Vec::with_capacity(64);
+        seal_all(&mut send, b"length-is-framing", &mut staging, &mut wire).expect("seals");
         let mut recv = Cipher::new(&master, &salt).expect("derives");
         let mut cursor = std::io::Cursor::new(&wire);
         let mut buf = Vec::with_capacity(MAX_CHUNK + TAG_LEN);
@@ -381,7 +397,7 @@ mod tests {
         ) else {
             panic!("handshake failed");
         };
-        seal_all(&mut send, b"ping", &mut uplink).expect("seals");
+        seal_all(&mut send, b"ping", &mut Vec::new(), &mut uplink).expect("seals");
         let mut recv = match recv {
             Recv::Ready(boxed) => *boxed,
             Recv::Waiting(master) => {
