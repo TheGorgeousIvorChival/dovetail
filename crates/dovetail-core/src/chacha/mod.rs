@@ -506,7 +506,7 @@ type Wide = portable::U4;
 pub const fn backend() -> &'static str {
     #[cfg(target_arch = "x86_64")]
     {
-        "4-lane core: AVX2, 8 states in flight, 8 blocks per iteration, at runtime-detected width"
+        "4-lane core: AVX2, 4 states in flight, 8 blocks per iteration, at runtime-detected width"
     }
     #[cfg(target_arch = "aarch64")]
     {
@@ -527,8 +527,8 @@ pub const fn backend() -> &'static str {
 /// therefore proven against [`GROUP_STATES`], the same way `avx2`'s shuffle
 /// immediates are proven against the formula that is supposed to produce them.
 #[cfg(target_arch = "aarch64")]
-const _: () = assert!(GROUP_STATES * <Wide as Lanes>::CHUNKS == 8);
+const _: () = assert!(GROUP_STATES == 8 && GROUP_STATES * <Wide as Lanes>::CHUNKS == 8);
 #[cfg(target_arch = "x86_64")]
-const _: () = assert!(GROUP_STATES * <Wide as Lanes>::CHUNKS == 8);
+const _: () = assert!(GROUP_STATES == 4 && GROUP_STATES * <avx2::A8 as Lanes>::CHUNKS == 8);
 #[cfg(not(any(target_arch = "x86_64", target_arch = "aarch64")))]
-const _: () = assert!(GROUP_STATES * <Wide as Lanes>::CHUNKS == 4);
+const _: () = assert!(GROUP_STATES == 4 && GROUP_STATES * <Wide as Lanes>::CHUNKS == 4);
