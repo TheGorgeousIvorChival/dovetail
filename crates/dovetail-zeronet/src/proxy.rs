@@ -125,7 +125,7 @@ fn serve_vless(mut stream: TcpStream, id: &[u8; 16], freedom: bool) {
     if stream.write_all(&[0, 0]).is_err() {
         return;
     }
-    relay(stream, uplink);
+    relay(&stream, &uplink);
 }
 
 /// Serve one `SOCKS5` connection by dialing through the `VLESS` server.
@@ -162,11 +162,11 @@ fn serve_socks(mut client: TcpStream, out: &VlessOut) {
             return;
         }
     }
-    relay(client, uplink);
+    relay(&client, &uplink);
 }
 
 /// Copy both directions; each half closes both sockets when its copy ends.
-fn relay(client: TcpStream, target: TcpStream) {
+fn relay(client: &TcpStream, target: &TcpStream) {
     let Ok(client_read) = client.try_clone() else {
         return;
     };
@@ -401,9 +401,9 @@ fn x25519_pair() -> (String, String) {
     let mut private = [0u8; 32];
     getrandom::getrandom(&mut private)
         .unwrap_or_else(|error| exit(&format!("no entropy: {error}")));
-    private[0] &= 248;
-    private[31] &= 127;
-    private[31] |= 64;
+    private[0] &= 0xF8;
+    private[31] &= 0x7F;
+    private[31] |= 0x40;
     let public = x25519_dalek::x25519(private, x25519_dalek::X25519_BASEPOINT_BYTES);
     (b64url(&private), b64url(&public))
 }
