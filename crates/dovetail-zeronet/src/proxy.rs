@@ -386,9 +386,7 @@ fn socks_handshake(client: &mut TcpStream) -> Option<SocketAddr> {
     if req[0] != 5 || req[1] != 1 {
         return None;
     }
-    let Some(target) = read_socks_addr_rest(client, req[3]) else {
-        return None;
-    };
+    let target = read_socks_addr_rest(client, req[3])?;
     if client.write_all(&[5, 0, 0, 1, 0, 0, 0, 0, 0, 0]).is_err() {
         return None;
     }
