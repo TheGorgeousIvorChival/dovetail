@@ -725,7 +725,7 @@ Flip the `xray-rust` pin to `test_enabled = true` with `dovetail_binary = "dovet
 ## P30 · Implement one README connection method end to end
 
 **When to use:** When exactly one unchecked row of the README connection-methods matrix is the next box to check, and the point is the whole box — both roles, the proof, the gate, the flipped cell — not a first half of it.
-**Status:** todo
+**Status:** done
 **Leverage:** 5
 **Effort:** large
 **Gates:** `cargo test --workspace`; CI: `conformance.yml` green with the row's upstream suites executed unmodified against the Dovetail binary plus the extra differential tests below, and the README cell flipped with the run that backs it
