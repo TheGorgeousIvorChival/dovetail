@@ -1,0 +1,52 @@
+name: conformance
+
+# Upstream suites run AGAINST Dovetail binaries, never copied here.
+#
+# sing-box is GPL-3.0, Xray-core/xray-rust are MPL-2.0, PattNG is GPL-3.0:
+# vendoring their tests would make this work's licence undecidable. Each
+# source in `upstream/pins.toml` carries `test_enabled` and, when enabled, a
+# `suite` command; `scripts/run-upstream-suite.sh` clones the pin and runs it.
+# Disabled suites are skipped with the rung reason printed, so the gap is
+# named rather than silent. See `docs/conformance.md`.
+#
+# A suite flips to enabled only with its rung's differential proof green.
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  schedule:
+    - cron: "23 5 * * 1"
+
+permissions:
+  contents: read
+
+env:
+  CARGO_TERM_COLOR: always
+  CARGO_INCREMENTAL: "0"
+
+jobs:
+  suites:
+    name: upstream suites (enabled only)
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: actions/setup-go@v5
+        with:
+          go-version: stable
+      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2
+      - name: check the upstream pins resolve
+        run: ./scripts/check-upstream-pins.sh
+      # Was red for every run since this job existed, with exit 126 and no other
+      # output: `check-fixture-safety.sh` was committed mode 100644, so `./` could
+      # not exec it. The tree's other seven scripts carry the exec bit, so this one
+      # was the odd one out and nothing said so — hence this line. The mode is in
+      # the index, not the working tree, which is why it survives a local `chmod`.
+      - name: no live credentials or routable endpoints in the tree
+        run: ./scripts/check-fixture-safety.sh
+      - name: dovetail's own differential (always runs)
+        run: cargo test --locked --workspace
+      - name: upstream suites by test_enabled bit
+        run: ./scripts/run-upstream-suite.sh

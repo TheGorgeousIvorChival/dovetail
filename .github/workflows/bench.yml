@@ -1,0 +1,86 @@
+name: bench
+
+# The claim this project makes is not "fastest", it is "not slower than the
+# reference, checked continuously". A benchmark that runs once decays: a new
+# CPU, a new upstream release, a changed input distribution. This workflow runs
+# on a schedule and on demand, and fails if any single length regresses, so the
+# number in the README is never older than the last run.
+
+on:
+  workflow_dispatch:
+  schedule:
+    # Weekly. Short enough that a regression is found before it ships, long
+    # enough that the runners are not saturated.
+    - cron: "17 4 * * 1"
+  push:
+    branches: [main]
+    paths:
+      - "crates/**"
+      - "upstream/pins.toml"
+      - "scripts/**"
+      - ".github/workflows/bench.yml"
+
+permissions:
+  contents: read
+
+env:
+  CARGO_TERM_COLOR: always
+  CARGO_INCREMENTAL: "0"
+
+jobs:
+  bench:
+    name: ${{ matrix.name }}
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          # One native runner per ISA this project claims anything about. A
+          # width chosen on Neoverse and not measured on Firestorm is a width
+          # chosen on one machine.
+          #
+          # There is deliberately no per-row `reference` key. The reference is
+          # the same crate everywhere, but the *backend it compiles to* is not:
+          # the `chacha20` crate only uses its NEON path behind a cfg nothing
+          # sets, so an aarch64 runner silently measures against a scalar core.
+          # The binary reports the backend it actually ran, so the label cannot
+          # drift away from the thing being compared against.
+          - name: linux x86_64
+            os: ubuntu-latest
+          - name: linux aarch64
+            os: ubuntu-24.04-arm
+          - name: macos aarch64
+            os: macos-15
+          - name: windows x86_64
+            os: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2
+      # A number measured against a pin that does not resolve is not a
+      # comparison, so the pins are checked before anything is measured.
+      - name: check the upstream pins resolve
+        run: ./scripts/check-upstream-pins.sh
+      - name: record the machine
+        run: |
+          echo "### machine" >> "$GITHUB_STEP_SUMMARY"
+          {
+            echo '```'
+            uname -a || ver
+            rustc -vV
+            echo '```'
+          } >> "$GITHUB_STEP_SUMMARY"
+      # Three gates, in order: identity, then the deterministic properties, then
+      # timing. The first two are exact and machine-independent; only the third
+      # can be noisy, and a length under the bar is re-measured before it fails.
+      - name: identity, then deterministic properties, then timings
+        run: cargo run --locked --release -p dovetail-bench
+      - name: publish the table
+        if: always()
+        run: |
+          {
+            echo
+            echo '```'
+            cat target/bench-report.md 2>/dev/null || echo "no report"
+            echo '```'
+          } >> "$GITHUB_STEP_SUMMARY"

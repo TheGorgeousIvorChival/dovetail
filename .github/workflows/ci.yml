@@ -1,0 +1,108 @@
+name: ci
+
+# Nothing is ever built on a developer machine. Every compile, test, benchmark
+# and comparison in this project happens here, on a runner whose architecture is
+# stated in the job name. A number produced locally describes the machine that
+# produced it and is not evidence about any other.
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+permissions:
+  contents: read
+
+env:
+  CARGO_TERM_COLOR: always
+  CARGO_INCREMENTAL: "0"
+  RUSTFLAGS: -D warnings
+
+jobs:
+  lint:
+    name: lint and docs
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: rustfmt, clippy
+      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2
+      # The lint policy lives in `[workspace.lints]` — `clippy::pedantic`,
+      # `undocumented_unsafe_blocks` and `unsafe_op_in_unsafe_fn` among them.
+      # `clippy::perf` and `clippy::suspicious` ride along as
+      # warnings (the xray-rust pattern): they advise on speed and probable
+      # mistakes without failing the job, because an advisory lint that cries
+      # wolf gets deleted and then advises nothing.
+      - run: cargo fmt --all -- --check
+      - name: lint the workspace
+        run: cargo clippy --workspace --all-targets --locked -- -D warnings -W clippy::perf -W clippy::suspicious
+      - run: cargo doc --workspace --locked --no-deps
+        env:
+          RUSTDOCFLAGS: -D warnings
+      # The core must never resolve DNS, leak memory primitives, or print: the
+      # parser decides `None` vs `NoneToPublic` without a resolver (the dial path
+      # re-checks), and anything that needs `Box::leak`/`mem::forget` or a
+      # `println!` in the core is a design bug, not an implementation detail.
+      # Cheap grep, no toolchain beyond git, fails in the same commit.
+      - name: check the leak surface
+        run: ./scripts/check-leak-surface.sh
+      # Fixes leave no trace: markers and block comments fail the job, and the
+      # `//` weight is reported so the one-line rule in the shared protocol is a
+      # count that moves rather than a wish. See scripts/check-comments.sh.
+      - name: check the comments leave no trace
+        run: ./scripts/check-comments.sh
+      # The prompt library is Markdown, so nothing else in this build stops an
+      # edit that breaks it: a duplicate id, a slice with no gate, a dependency
+      # on a prompt that does not exist, or a `**Touches:**` path that has been
+      # renamed under it. Offline, cheap, and it fails in the same commit that
+      # made the mistake.
+      - name: check the prompt library
+        run: cargo run --locked --quiet -p dovetail-prompt -- check
+
+  test:
+    name: test (${{ matrix.name }})
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          # One job per OS this project claims anything about. The TLS stack is
+          # rustls everywhere, so there is no per-backend matrix to multiply.
+          # Architecture asymmetry: `chacha/avx2.rs` only compiles on x86_64, so an
+          # unnecessary `unsafe` around the safe `xor_groups` fails linux/windows
+          # via `RUSTFLAGS=-D warnings` (`unused_unsafe`) while macos stays green.
+          # `neon::xor_group` calls the same function without `unsafe`.
+          - name: linux x86_64
+            os: ubuntu-latest
+          - name: macos aarch64
+            os: macos-latest
+          - name: windows x86_64
+            os: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2
+      - run: cargo test --workspace --locked
+
+  upstream:
+    name: upstream comparison is current
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      # The upstream implementations this claims to match are pinned by commit.
+      # A pin that no longer resolves fails here rather than silently making
+      # every comparison below it meaningless. This checks every entry and
+      # rejects an unpinned one, rather than skipping it: a check that tolerates
+      # the entries it exists to enforce reads as coverage while providing none.
+      - name: check the upstream pins resolve
+        run: ./scripts/check-upstream-pins.sh
+
+  prompt-library:
+    name: the prompt library is well formed
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2
+      - run: cargo run --locked -p dovetail-prompt -- check

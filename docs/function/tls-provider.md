@@ -1,0 +1,58 @@
+# `dovetail_core::tls`
+
+One interface, one backend: `rustls`.
+
+## Why one interface and one backend
+
+A proxy needs a TLS stack, and the one used here is `rustls`: pure Rust and auditable, with no C toolchain in the build. What that requires is an **interface that does not leak the stack**, so that a component above it cannot accidentally depend on it. Anything whose answer is really about rustls internals does not belong in it — it belongs in the adapter, read back at runtime.
+
+## The interface
+
+```mermaid
+graph TD
+    C["a component: routing, pooling, proxying"] --> T["tls::TlsProvider"]
+
+    T --> RS["RustlsProvider&lt;S&gt;<br/>rustls"]
+
+    RS --> C1["ClientConnection<br/>+ Stream"]
+
+    subgraph shared["takes the same input"]
+        CFG["TlsConfig<br/>server_name, alpn, roots"]
+    end
+    CFG --> RS
+
+    subgraph surface["exposes the same surface"]
+        M1["name()"]
+        M2["suites()"]
+        M3["handshake()"]
+        M4["alpn()"]
+        M5["Read + Write"]
+    end
+    RS --> surface
+```
+
+The provider **is** `Read + Write`. A caller moves encrypted bytes without knowing the stack underneath, which is what keeps the record path measurable on its own rather than tangled with the handshake.
+
+## Selecting the backend
+
+There is nothing to select: rustls is linked unconditionally. A build with no TLS stack is not a configuration this crate offers, because a caller who finds no provider reaches for plaintext, and no test asserting "never plaintext" would catch that — such a test needs a plaintext path to assert against.
+
+## What `suites()` reports
+
+`suites()` returns the provider's actual suite list, read at runtime from `rustls::crypto::ring::ALL_CIPHER_SUITES` in its own preference order.
+
+The list is never written down in this repository as a claim about the stack. It is read back from the stack at run time, because a list maintained by hand is a claim about the stack rather than a report of it, and goes stale silently.
+
+## One mapping that cannot be made exhaustive
+
+`rustls::Error` is `#[non_exhaustive]`, so the mapping from it to `TlsError` needs a trailing `_` arm. That means a **new** rustls variant would land in `Other` rather than failing the build — including a new certificate error, which is both the variant most likely to be added and the one a caller most wants classified.
+
+Every variant rustls 0.23 defines is listed explicitly anyway, so the classification is deliberate and reviewable rather than whatever the last arm caught. But the mapping is re-read when rustls is bumped, and **nothing checks that it is complete**: a new variant added upstream would land in `Other` silently. What is checked is that the explicit arms exist at all, by reading `rustls_backend.rs` ([`claims.md`](claims.md)).
+
+## Verification status
+
+| backend | compiles here | tested here |
+| --- | --- | --- |
+| `rustls` | yes — `ci.yml` builds it on every runner in the matrix | **no. There is no test in `tls/` at all**: no handshake, no negative case, nothing |
+
+Nothing checks the handshake, so nothing claims it. `crates/dovetail-core/src/tls/` contains zero `#[test]`; the slice that writes them is P6, and until they exist the honest line is that the adapter compiles on three operating systems and has never dialled. A "tested here" cell for a backend with no tests in its module is the exact shape of claim this table exists to refuse ([`claims.md`](claims.md)).

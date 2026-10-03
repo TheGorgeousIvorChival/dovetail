@@ -1,0 +1,20 @@
+[package]
+name = "dovetail-zeronet"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+publish = false
+description = "ZeroNet-compatible application built on the released dovetail-core (MIT)"
+
+[lints]
+workspace = true
+
+[dependencies]
+# The ZeroNet app on the *released* core: `version = "0.1.0"` is the requirement
+# (see the workspace `dovetail-core` entry) and `path` is the checkout fallback
+# so this builds without a registry. Releasing `dovetail-core 0.1.0` keeps this
+# line unchanged — the version requirement is what stops the app from silently
+# building against an older core. No Xray-core/sing-box/xray-rust/PattNG/ZeroNet
+# source is copied here; links are parsed by `dovetail_core::vless`.
+dovetail-core = { workspace = true }

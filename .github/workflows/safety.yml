@@ -1,0 +1,73 @@
+name: safety
+
+# Memory safety moves at a slower speed than development: Miri interprets
+# rather than executes, so it takes tens of minutes and would hold every push
+# hostage for a verdict that changes only when the `unsafe` surface or the
+# nightly toolchain does. It therefore runs once a day, not per push, and
+# writes its one-line verdict into the README status table itself — so the
+# claim "no use-after-free, no leak" is never older than yesterday, and the
+# next check has a date on it rather than living in somebody's head.
+
+on:
+  schedule:
+    # Daily. Miri's results move with the nightly toolchain, so daily is the
+    # slowest cadence that still names which nightly the verdict belongs to.
+    - cron: "11 3 * * *"
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+env:
+  CARGO_TERM_COLOR: always
+  CARGO_INCREMENTAL: "0"
+  RUSTFLAGS: -D warnings
+
+jobs:
+  miri:
+    name: miri nightly + one README line
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@nightly
+        with:
+          components: miri
+      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2
+      # Miri proves the absence of a use-after-free, an out-of-bounds access and
+      # a leak for the code it can interpret. It cannot interpret the
+      # architecture intrinsics, which is why `chacha::portable` is deliberately
+      # the whole algorithm in safe Rust: Miri runs the ladder, the counter
+      # arithmetic and every store offset through it, so the SIMD modules are left
+      # with nothing but five instructions each to get wrong — and those are gated
+      # by the differential test instead.
+      # The verdict is kept, not failed on: the README line is written first so
+      # a red run leaves its date behind rather than silence, and the job fails
+      # after, in the last step.
+      - name: run Miri, keeping its verdict
+        run: |
+          set +e
+          cargo +nightly miri test -p dovetail-core
+          echo "MIRI_EXIT=$?" >> "$GITHUB_ENV"
+      - name: write the one README line
+        run: |
+          if [ "${MIRI_EXIT:-1}" = "0" ]; then verdict="PASS"; else verdict="FAIL"; fi
+          today="$(date -u +%F)"
+          next="$(date -u -d 'tomorrow' +%F)"
+          row="| memory safety | Miri nightly on the safe-Rust core: $verdict $today — next check $next 03:11 UTC (SIMD cores: differential test, not Miri) |"
+          awk -v row="$row" '{ if (index($0, "| memory safety |") == 1) print row; else print }' README.md > README.md.next
+          mv README.md.next README.md
+          grep '^| memory safety |' README.md
+      - name: commit the README line
+        run: |
+          git config user.name "dovetail-safety"
+          git config user.email "dovetail-safety@users.noreply.github.com"
+          git add README.md
+          if git diff --cached --quiet; then
+            echo "README line unchanged"
+          else
+            if [ "${MIRI_EXIT:-1}" = "0" ]; then verdict="PASS"; else verdict="FAIL"; fi
+            git commit -m "safety: Miri $verdict $(date -u +%F)" && git push
+          fi
+      - name: fail when Miri failed
+        if: env.MIRI_EXIT != '0'
+        run: exit 1

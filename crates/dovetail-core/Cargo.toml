@@ -1,0 +1,23 @@
+[package]
+name = "dovetail-core"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+publish = false
+
+[lints]
+workspace = true
+
+[features]
+# Compiles the reference implementation from the `chacha20` crate, which the
+# differential tests and the benchmark gate compare against. Never enabled in a
+# shipped build: if the shipped path could call it, "bit-identical" would be a
+# statement about comparing the reference against itself.
+bench-reference = []
+
+[dependencies]
+# The reference implementation the tests and benchmarks compare against. Never
+# used by the shipped path: if it were, "bit-identical" would be circular.
+chacha20 = "0.9"
+rustls = { workspace = true, features = ["std", "ring"] }
