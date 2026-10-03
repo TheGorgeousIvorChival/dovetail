@@ -129,21 +129,6 @@ pub(crate) fn pump_relay(plain: &TcpStream, sealed: &TcpStream, send: Cipher, re
     let mut sealed_read = sealed_read;
     let mut plain_write = plain_write;
     let mut send = send;
-    let mut recv = match recv {
-        Recv::Ready(boxed) => *boxed,
-        Recv::Waiting(master) => {
-            let mut peer = [0u8; SALT_LEN];
-            if read_exact(&mut sealed_read, &mut peer).is_err() {
-                trace("no server salt");
-                return;
-            }
-            trace("server salt read");
-            let Some(cipher) = Cipher::new(&master, &peer) else {
-                return;
-            };
-            cipher
-        }
-    };
     let done = thread::spawn(move || {
         let mut buf = vec![0u8; READ_CHUNK];
         while let Ok(read) = plain_read.read(&mut buf) {
@@ -160,6 +145,21 @@ pub(crate) fn pump_relay(plain: &TcpStream, sealed: &TcpStream, send: Cipher, re
         let _ = plain_read.shutdown(Shutdown::Both);
         let _ = sealed_write.shutdown(Shutdown::Both);
     });
+    let mut recv = match recv {
+        Recv::Ready(boxed) => *boxed,
+        Recv::Waiting(master) => {
+            let mut peer = [0u8; SALT_LEN];
+            if read_exact(&mut sealed_read, &mut peer).is_err() {
+                trace("no server salt");
+                return;
+            }
+            trace("server salt read");
+            let Some(cipher) = Cipher::new(&master, &peer) else {
+                return;
+            };
+            cipher
+        }
+    };
     while let Some(chunk) = open_chunk(&mut sealed_read, &mut recv) {
         trace(&format!("sealed->plain {} bytes", chunk.len()));
         if plain_write.write_all(&chunk).is_err() {
