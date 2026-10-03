@@ -116,6 +116,24 @@ fn fresh_key() -> Option<String> {
     Some(b64_encode(&raw))
 }
 
+/// XOR `buf` with the 4-byte mask repeated; the mask period divides 16, so
+/// whole 16-byte chunks take one XOR each and only the tail stays scalar.
+fn apply_mask(buf: &mut [u8], mask: &[u8; 4]) {
+    let wide = [
+        mask[0], mask[1], mask[2], mask[3], mask[0], mask[1], mask[2], mask[3], mask[0], mask[1],
+        mask[2], mask[3], mask[0], mask[1], mask[2], mask[3],
+    ];
+    let (chunks, tail) = buf.as_chunks_mut::<16>();
+    for chunk in chunks {
+        for (byte, key) in chunk.iter_mut().zip(wide) {
+            *byte ^= key;
+        }
+    }
+    for (i, byte) in tail.iter_mut().enumerate() {
+        *byte ^= mask[i & 3];
+    }
+}
+
 /// Four fresh random bytes, the mask of one client frame.
 fn fresh_mask() -> Option<[u8; 4]> {
     let mut mask = [0u8; 4];
@@ -239,9 +257,7 @@ impl WsReader {
             crate::proxy::read_exact(&mut self.read, &mut payload).ok()?;
         }
         if let Some(mask) = mask {
-            for (i, byte) in payload.iter_mut().enumerate() {
-                *byte ^= mask[i & 3];
-            }
+            apply_mask(&mut payload, &mask);
         }
         Some((fin, opcode, payload))
     }
@@ -378,9 +394,7 @@ fn write_frame(stream: &mut TcpStream, masked: bool, opcode: u8, data: &[u8]) ->
         return false;
     }
     let mut data = data.to_vec();
-    for (i, byte) in data.iter_mut().enumerate() {
-        *byte ^= mask[i & 3];
-    }
+    apply_mask(&mut data, &mask);
     stream.write_all(&data).is_ok()
 }
 
@@ -507,6 +521,28 @@ mod tests {
             accept_key("dGhlIHNhbXBsZSBub25jZQ=="),
             "s3pPLMBiTxaQ9kYGzzhZRbK+xOo="
         );
+    }
+
+    #[test]
+    fn mask_chunks_match_the_byte_loop() {
+        // The naive loop stays as the checker: any chunking mistake shows up as
+        // a byte difference, and unmasking twice must restore the plaintext.
+        for len in [
+            0, 1, 3, 4, 5, 15, 16, 17, 31, 32, 33, 63, 64, 255, 1024, 8192,
+        ] {
+            for mask in [[0u8, 0, 0, 0], [1, 2, 3, 4], [0xFF, 0x00, 0xA5, 0x5A]] {
+                let plain: Vec<u8> = (0..len).map(|i| (i % 251) as u8).collect();
+                let mut want = plain.clone();
+                for (i, byte) in want.iter_mut().enumerate() {
+                    *byte ^= mask[i & 3];
+                }
+                let mut got = plain.clone();
+                apply_mask(&mut got, &mask);
+                assert_eq!(got, want, "len {len} mask {mask:?}");
+                apply_mask(&mut got, &mask);
+                assert_eq!(got, plain, "len {len} unmasks");
+            }
+        }
     }
 
     #[test]
