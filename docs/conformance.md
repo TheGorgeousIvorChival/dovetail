@@ -1,6 +1,6 @@
 # Conformance: all of their tests, enabled gradually
 
-This project becomes a drop-in replacement (Goal 2) by running upstream suites *against* Dovetail binaries in CI — never by copying them here. sing-box is GPL-3.0 and Xray-core / xray-rust are MPL-2.0; copying their tests would make this work's licence undecidable. Running them unmodified is both licence-clean and a stronger claim than a hand-rewritten vector. **One suite does that against this workspace**: `zeronet` runs all seventeen of its `xray_oracle` tests, unedited, against `dovetail-zeronet`; **two pass and fifteen fail, each named below**, measured by `conformance.yml` run `37101909935`. The other six pins run no Dovetail binary at all, each for the reason its own pin carries.
+This project becomes a drop-in replacement (Goal 2) by running upstream suites *against* Dovetail binaries in CI — never by copying them here. sing-box is GPL-3.0 and Xray-core / xray-rust are MPL-2.0; copying their tests would make this work's licence undecidable. Running them unmodified is both licence-clean and a stronger claim than a hand-rewritten vector. **One suite does that against this workspace**: `zeronet` runs all seventeen of its `xray_oracle` tests, unedited, against `dovetail-zeronet`; **two pass and fifteen fail, each named below**, measured by `conformance.yml` run `37102681568`. The other six pins run no Dovetail binary at all, each for the reason its own pin carries.
 
 ## The rule
 
@@ -39,7 +39,7 @@ Two of seven have a seam, and both spawn the substitute as `run -c <config.json>
 
 ## What the zeronet oracle measures, by name
 
-`crates/zero-runtime/tests/xray_oracle.rs` at `97a99734` holds **seventeen** `#[ignore]`d differential tests — nine written by one macro invocation, eight written out longhand. All seventeen run in `conformance.yml` run `37101909935` against `dovetail-zeronet` through `ZRAY_XRAY_BINARY`, with no upstream file edited. Before that run the suite command was narrowed to one test name, so the eight longhand tests had never been executed and the count was reported as nine; run `37100395876` shows the narrowing's own arithmetic, `1 passed; 8 failed; 8 filtered out`.
+`crates/zero-runtime/tests/xray_oracle.rs` at `97a99734` holds **seventeen** `#[ignore]`d differential tests — nine written by one macro invocation, eight written out longhand. All seventeen run in `conformance.yml` run `37102681568` against `dovetail-zeronet` through `ZRAY_XRAY_BINARY`, with no upstream file edited, and the verdicts below are that run's. Before it, the suite command was narrowed to one test name, so the eight longhand tests had never been executed and the count was reported as nine; run `37100395876` shows the narrowing's own arithmetic, `1 passed; 8 failed; 8 filtered out`.
 
 | test at `97a99734` | verdict | why, from that run's log |
 | -------------------- | ------- | ------------------------- |
