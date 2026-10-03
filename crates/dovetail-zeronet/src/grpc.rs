@@ -857,7 +857,7 @@ impl GrpcReader {
                 break;
             }
             let payload = hunk_decode(&self.msg[..self.need])?;
-            self.backlog.extend_from_slice(&payload);
+            self.backlog.extend_from_slice(payload);
             self.msg.drain(..self.need);
             self.need = 0;
         }
@@ -1059,12 +1059,14 @@ impl GrpcWriter {
 
 /// Wrap application bytes as one `Hunk` message with its `gRPC` envelope.
 fn hunk_frame(data: &[u8]) -> Vec<u8> {
-    let mut hunk = vec![0x0Au8];
-    push_varint(&mut hunk, data.len() as u64);
-    hunk.extend_from_slice(data);
+    // One buffer, not two: the old form built the hunk in its own `Vec` and
+    // copied it behind a five-zero prefix, so every message paid an allocation
+    // and a full copy for five length bytes.
     let mut out = vec![0u8; 5];
-    out[1..5].copy_from_slice(&(hunk.len() as u32).to_be_bytes());
-    out.extend_from_slice(&hunk);
+    out.push(0x0A);
+    push_varint(&mut out, data.len() as u64);
+    out.extend_from_slice(data);
+    out[1..5].copy_from_slice(&((out.len() - 5) as u32).to_be_bytes());
     out
 }
 
