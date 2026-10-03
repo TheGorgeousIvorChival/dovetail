@@ -336,7 +336,11 @@ impl WsWriter {
     }
 
     /// Send the close frame once, however the relay is ending.
-    fn close(&self) {
+    ///
+    /// `pub(crate)` because a carried protocol ends its carrier itself: a relay
+    /// over this carrier has to close the carrier when it stops, and it is not
+    /// this module's relay.
+    pub(crate) fn close(&self) {
         if self.shared.closed.swap(true, Ordering::SeqCst) {
             return;
         }
