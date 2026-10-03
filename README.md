@@ -80,6 +80,8 @@ Details: [`chacha-xor-blocks.md`](docs/function/chacha-xor-blocks.md), [`unsafe-
 
 **2 — become a drop-in replacement.** `dovetail-core` is a *superset* of Xray-core, sing-box, xray-rust, PattNG's Xray fork, ZeroNet/Zray, mqvpn, Aether, zeptun, slipstream and quiche — every way PattNG can connect parses, one method dials at a time ([`superset.md`](docs/arch/superset.md), full matrix below). Upstream suites are meant to run against Dovetail binaries in CI, never copied here (licence-clean) — and **two do**: 2 of 12, `zeronet` 7 of 17 and `xray-rust` 5 of 23 against `dovetail-zeronet`, checked by `conformance.yml`. The other ten pins have no seam ([`conformance.md`](docs/conformance.md)).
 
+**3 — spoof SNI without root.** DPI circumvention by injecting a fake TLS ClientHello carrying an allowlisted SNI ahead of the real handshake; needs no `CAP_NET_RAW`, no `SOCK_RAW`, no root on Android — `VpnService` TUN plus a userspace TCP stack does it all in user space — which nothing in CI checks yet.
+
 ```bash
 cargo run -p dovetail-bench -- --config 'vless://...'   # the comparison table for a link
 cargo run -p dovetail-zeronet -- check 'vless://...'     # parse offline; `run` dials TCP, sends nothing
@@ -246,6 +248,15 @@ One day every box above is checked: each row keeps its `planned` until its
 differential proof and its benchmark gate are green, exactly as rows 1–10
 already do in [`superset.md`](docs/arch/superset.md) and the per-method table
 in benchmark reports.
+
+### I — SNI spoofing without root (learned, not pinned)
+
+| # | method | Dovetail | learned from |
+| --- | --- | --- | --- |
+| 48 | Fake-ClientHello SNI spoofing (DPI allowlist bypass, no root) | planned — nothing in CI checks it yet | `UAC-SNI-Spoofer-Android` (`VpnService` + `tun2socks`); `sni-spoofing-rust` author statement that desktop needs raw packets while Android's route is a `VpnService` app |
+
+- `VpnService` TUN intercepts device traffic; a userspace TCP stack (`tun2socks`/`lwIP` shape) owns the connection, so no `SOCK_RAW` is ever opened.
+- The stack sends a fake ClientHello with a spoofed SNI and a deliberately wrong sequence number first: DPI sees the allowlist entry and permits the flow, the real server discards the bad-seq packet, and the legitimate handshake proceeds — which nothing in CI checks yet.
 
 ## Scope
 
