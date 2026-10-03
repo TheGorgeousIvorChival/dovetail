@@ -72,8 +72,13 @@ pub(crate) fn serve_file(path: &str) -> ! {
                 }
                 "vmess" => {
                     let id = inbound_id(inbound);
+                    let carrier = inbound_carrier(inbound);
                     let address_clone = address.clone();
-                    let role = Role::Vmess { id, freedom };
+                    let role = Role::Vmess {
+                        id,
+                        carrier,
+                        freedom,
+                    };
                     thread::spawn(move || accept_loop(&address_clone, &role));
                     inbounds += 1;
                 }
@@ -127,7 +132,11 @@ enum Role {
     /// Accept `trojan`, dial the requested target itself.
     Trojan { password: String, freedom: bool },
     /// Accept `VMess`, dial the requested target itself.
-    Vmess { id: [u8; 16], freedom: bool },
+    Vmess {
+        id: [u8; 16],
+        carrier: Carrier,
+        freedom: bool,
+    },
     /// Accept `shadowsocks`, dial the requested target itself.
     Shadowsocks {
         password: String,
@@ -230,7 +239,18 @@ fn accept_loop(address: &str, role: &Role) {
                 freedom,
             } => serve_vless(stream, &id, &carrier, freedom),
             Role::Trojan { password, freedom } => serve_trojan(stream, &password, freedom),
-            Role::Vmess { id, freedom } => crate::vmess::serve(stream, &id, freedom),
+            Role::Vmess {
+                id,
+                carrier,
+                freedom,
+            } => match carrier {
+                Carrier::Raw => crate::vmess::serve(stream, &id, freedom),
+                Carrier::Ws { path } => crate::vmess::serve_ws(stream, path.as_str(), &id, freedom),
+                // The message-framed carriers are refused rather than half-served:
+                // `VMess` reads to the byte and a length prefix that straddles two
+                // messages is a different framing, not a longer read.
+                Carrier::HttpUpgrade { .. } | Carrier::Grpc { .. } => {}
+            },
             Role::Shadowsocks {
                 password,
                 method,
