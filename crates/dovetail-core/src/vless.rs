@@ -471,7 +471,7 @@ impl VisionSeal {
 }
 
 /// Receiving side of Vision records: the unpadding state machine, zero heap.
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone)]
 pub struct VisionOpen {
     id: [u8; 16],
     command: i32,
@@ -494,6 +494,7 @@ impl VisionOpen {
     }
 
     /// Strip one call's framing: UUID once, command blocks, padding skipped.
+    /// A first call shorter than 21 bytes passes through untouched, as upstream does.
     ///
     /// Returns content bytes written and the last completed command, if any.
     /// `out` must hold `buf` (content never exceeds input).
@@ -875,6 +876,12 @@ mod tests {
     const SEAL_NONCE: [u8; 12] = [0xa7u8; 12];
     const SEAL_UUID: [u8; 16] = [0xabu8; 16];
 
+    /// Gate fields fresh: upstream keeps the last command across a reset, so
+    /// whole-state equality would fail a correct mirror right after End.
+    fn is_fresh(open: &VisionOpen) -> bool {
+        open.command == -1 && open.content == -1 && open.padding == -1
+    }
+
     /// The draw a fresh session takes first, from an independent `fill_exact` call.
     fn first_draw() -> u32 {
         let mut scratch = [0u8; 64];
@@ -960,7 +967,7 @@ mod tests {
         let (written2, completed2) = open2.open(&buf2, &mut out2);
         assert_eq!(&out2[..written2], b"zRAW");
         assert_eq!(completed2, Some(VisionCommand::End));
-        assert_eq!(open2, VisionOpen::new(&id));
+        assert!(is_fresh(&open2));
         // After the reset the stream is raw: no UUID, everything passes through.
         let (written3, completed3) = open2.open(b"more", &mut out2);
         assert_eq!(&out2[..written3], b"more");
@@ -993,18 +1000,33 @@ mod tests {
         let (written3, completed3) = open3.open(&buf, &mut out3);
         assert_eq!(&out3[..written3], b"q");
         assert_eq!(completed3, None);
-        assert_eq!(open3, VisionOpen::new(&id));
+        assert!(is_fresh(&open3));
     }
 
     #[test]
     fn open_split_feeds_match_whole_feeds() {
-        // TCP splits anywhere, including mid-header: chunk sizes 1..9 cover it.
+        // TCP splits anywhere, including mid-header; below 21 bytes the first
+        // piece passes through untouched instead, exactly as upstream does it.
         let id = [0x22u8; 16];
         let content: Vec<u8> = (0..300).map(|i| (i % 251) as u8).collect();
         let mut seal = VisionSeal::new(&SEAL_KEY, &SEAL_NONCE, &id);
         let mut sealed = vec![0u8; seal_len(content.len(), 8192, true)];
         let n = seal.seal(&mut sealed, &content, VisionCommand::Continue, true);
         for chunk in 1..9 {
+            let mut open = VisionOpen::new(&id);
+            let mut got = Vec::new();
+            for piece in sealed[..n].chunks(chunk) {
+                let mut out = vec![0u8; piece.len()];
+                let (written, _) = open.open(piece, &mut out);
+                got.extend_from_slice(&out[..written]);
+            }
+            assert_eq!(
+                got,
+                sealed[..n],
+                "chunk {chunk}: short first read passes through"
+            );
+        }
+        for chunk in [21, 22, 30] {
             let mut open = VisionOpen::new(&id);
             let mut got = Vec::new();
             let mut last = None;
