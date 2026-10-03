@@ -1095,7 +1095,9 @@ fn read_varint(msg: &[u8], at: &mut usize) -> Option<u64> {
 }
 
 /// Decode a `Hunk`, keeping the last value of a repeated field like decoders do.
-fn hunk_decode(msg: &[u8]) -> Option<Vec<u8>> {
+/// Field 1 of one hunk message, borrowed: the old owned return copied the
+/// whole message just for the caller to copy it into the backlog again.
+fn hunk_decode(msg: &[u8]) -> Option<&[u8]> {
     let mut at = 0;
     let mut data: &[u8] = &[];
     while at < msg.len() {
@@ -1117,7 +1119,7 @@ fn hunk_decode(msg: &[u8]) -> Option<Vec<u8>> {
             skip_field(msg, &mut at, wire)?;
         }
     }
-    Some(data.to_vec())
+    Some(data)
 }
 
 /// Skip one unknown protobuf field without recursing into groups.
