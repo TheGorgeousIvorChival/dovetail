@@ -649,13 +649,13 @@ Give `dovetail-zeronet` a `trojan` server role and a `trojan` client role over r
 
 ## P25 · VMess protocol rung over raw TCP
 
-**When to use:** When the two vmess oracle failures are the next ones to clear: both expect a `vmess` listener and get exit 1.
-**Status:** todo
+**When to use:** Done, by P30 rather than by a slice written to this prompt: the `vmess` rung, both roles over raw `TCP`, landed in `crates/dovetail-zeronet/src/vmess.rs` and `conformance.yml` run `37122185418` printed `test vmess_over_raw_tcp_matches_the_oracle ... ok` and `PASS: zeronet suite green against dovetail-zeronet at 97a99734`, which is this slice's gate. `vmess_over_websocket_matches_the_oracle` is still the named failure it was, and is P31.
+**Status:** done
 **Leverage:** 4
 **Effort:** large
-**Gates:** `cargo test --workspace`; CI: `conformance.yml` green with both vmess oracle tests executed against `dovetail-zeronet`
+**Gates:** `cargo test --workspace`; CI: `conformance.yml` green with `vmess_over_raw_tcp_matches_the_oracle` executed against `dovetail-zeronet`; `vmess_over_websocket_matches_the_oracle` reported as a named failure
 **Depends on:** P19
-**Touches:** crates/dovetail-zeronet/src/proxy.rs, upstream/pins.toml, docs/conformance.md
+**Touches:** crates/dovetail-zeronet/src/vmess.rs, crates/dovetail-zeronet/src/proxy.rs, upstream/pins.toml, docs/conformance.md
 **Random weight:** 2
 
 ```text
@@ -756,6 +756,76 @@ Land as one method only: the row, its proof, its gate, the suite flip in `upstre
 
 ```text
 Give the protocol framings a wall-clock comparison with a reference on every ISA runner, the way gate 3 compares the record layer against the chacha20 crate. The obstacle is structural and decided first: framing lives in application crates a bench crate cannot import, and no same-language reference exists for VMess AEAD framing, so this slice decides where the timed code lives and what it is measured against, then gates it with gate 3's remeasure discipline. Counts (P30's formula gates) catch added copies; only timing catches added passes at equal size. Until then the claim stays the narrowed one P30 makes: bit-identical framing with exact sizes, no speed claim.
+```
+
+## P32 · VMess over the ws carrier
+
+**When to use:** When `vmess_over_websocket` is the last `xray_oracle` failure against this binary: it expects a `vmess` listener behind a `ws` carrier and gets a connection closed after the first byte.
+**Status:** todo
+**Leverage:** 3
+**Effort:** medium
+**Gates:** `cargo test --workspace`; CI: `conformance.yml` green with `vmess_over_websocket_matches_the_oracle` executed against `dovetail-zeronet`
+**Depends on:** P25
+**Touches:** crates/dovetail-zeronet/src/vmess.rs, crates/dovetail-zeronet/src/proxy.rs, upstream/pins.toml, docs/conformance.md
+**Random weight:** 2
+
+```text
+Carry `VMess` inside the `ws` carrier P27 already built, in both roles, rather than a second carrier: the handshake and the framing are `crate::ws`'s, and the bytes inside them are `crate::vmess`'s, unchanged. Then every `xray_oracle` test is either enabled or named, and the sentence in `docs/conformance.md` that lists the failures can go rather than be maintained.
+
+The `VMess` header is a hundred bytes of sealed material behind a timestamp, so this is also the first carrier that carries a header rather than a fixed-size prologue: read it to the byte, never to the packet. A carrier that hands the protocol a short read is a hang wearing a successful handshake.
+```
+
+## P33 · Name the two matrix rows the serving roles already earned
+
+**When to use:** Whenever a protocol role lands and the README connection-methods matrix still describes it as planned: rows 5 and 7 still read `planned` while the raw-`TCP` `trojan` and `shadowsocks` rungs are green in `conformance.yml`. Row 6 was flipped by P30, which is the shape to copy.
+**Status:** todo
+**Leverage:** 2
+**Effort:** small
+**Gates:** CI: `ci.yml` green; `conformance.yml` green with `trojan_over_raw_tcp_matches_the_oracle` and `shadowsocks_over_raw_tcp_matches_the_oracle` executed against `dovetail-zeronet`
+**Depends on:** P30
+**Touches:** README.md, docs/arch/superset.md
+**Random weight:** 1
+
+```text
+Flip rows 5 and 7, and put the run that proves each one in the cell rather than the word `implemented`. A cell that says `implemented` names no run and is checked by nobody; a cell that says `implemented (conformance 37122185418)` is a claim with a citation, and the citation is the thing that goes red when the claim stops being true.
+
+Name the limit in the cell too, the way row 6 does: both of these are raw `TCP` with one cipher each and no `UDP`, so a reader who needs the `2022` or the `UDP` half knows from the table rather than from the source.
+```
+
+## P34 · Make the gRPC loopback test stop failing one run in nine
+
+**When to use:** Now, and before the next slice reads a red `cargo test --workspace` as its own: `grpc::tests::tunnel_carries_an_echo_over_loopback` failed 23 times in 200 runs of that one test with nothing else running, measured on a tree whose `grpc.rs` no slice in flight had touched. `grpc.rs` is not the next slice's business; the measurement is.
+**Status:** todo
+**Leverage:** 3
+**Effort:** medium
+**Gates:** `cargo test --workspace` green on three consecutive runs; a loop of the single test over 200 runs with zero failures, printed by the test or the script rather than remembered
+**Depends on:** P19
+**Touches:** crates/dovetail-zeronet/src/grpc.rs
+**Random weight:** 2
+
+```text
+Find it with the trace rather than by reading, because reading says nothing about which of the two ends loses the frame. Instrument `read_head`, `read_body`, `emit` and `write_frame` with the peer's address, then loop the test until it fails. A failing run prints this, and the last two lines are the whole bug: the client reads the nine header bytes of the `pong` `DATA` frame and then `read_body` sees end of stream, so a frame header arrived without its body. That is a torn write or a reset with data in the receive queue, not a framing error, and the fix is whichever of the two it turns out to be.
+
+Then make the test able to fail *deterministically*, because a test that fails one run in nine teaches the next contributor to re-run CI instead of reading it. A loopback test that needs a real socket to lose a race is testing the scheduler; the same assertion over an in-memory stream or a frame buffer fails every time it is wrong and never flakes.
+
+Report the before and after as a rate over a stated number of runs. "Fixed" is not a rate.
+```
+
+## P35 · Take the third copy of the config and address walks out of `proxy.rs`
+
+**When to use:** When the next slice touches a protocol role: `find_vless_outbound` (`crates/dovetail-zeronet/src/proxy.rs:801`) and `find_vmess_outbound` (`:839`) walk the same `outbounds` → `settings.vnext[0]` → `users[0]` shape in two nearly identical loops, `shadowsocks::parse_addr_header` (`shadowsocks.rs:251`) and `vmess::decode_target` (`vmess.rs:592`) parse the same address triple in two orders, and `inbound_id` (`:672`) and `inbound_password` (`:717`) each walk `settings.clients[0]` themselves.
+**Status:** todo
+**Leverage:** 3
+**Effort:** medium
+**Gates:** `cargo test --workspace`; CI: `conformance.yml` green with the enabled `zeronet` subset executed against `dovetail-zeronet`
+**Depends on:** P25
+**Touches:** crates/dovetail-zeronet/src/proxy.rs, crates/dovetail-zeronet/src/shadowsocks.rs, crates/dovetail-zeronet/src/vmess.rs
+**Random weight:** 2
+
+```text
+One `vnext` walker, one inbound-client reader, one in-memory address parser with each caller reading the port where its own wire format puts it — `shadowsocks` after the address, `VMess` before it — and nothing else changes. The proof is the enabled suite plus the workspace tests: a refactor that alters a byte on any wire is not a refactor, and `conformance.yml` is what says so.
+
+Do not take the opportunity to shrink `vmess.rs` itself. It is 1,014 lines of code against a from-scratch equivalent written to this same prompt at 880, but it carries all four data ciphers where that one carried one, and a slice that trades capability for lines is a different slice with its own differential proof. If the smaller form is wanted, it is its own PR against the oracle, not a line count argued here.
 ```
 
 ## Reading this file as a roadmap
