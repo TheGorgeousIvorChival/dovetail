@@ -13,8 +13,8 @@ Named for the joint that locks two members together so they carry load as one. A
 | `chacha::avx2`, `chacha::sse2` | executed: gates 1 and 2 pass 3600 shapes on `linux x86_64` and `windows x86_64` |
 | not slower at any length | no worse than 0.95x of the reference at any measured length from 65 bytes up; lengths 1–64 are a tie by construction and identity-checked only — gate 3 times 235 of 300 listed lengths, checked by `bench.yml` gate 3 |
 | TLS backend | `rustls` implemented and compiled in `ci.yml`; handshake unproven — P6 is `doing` and no handshake test exists yet |
-| upstream comparison | seven sources pinned by commit; `check-upstream-pins.sh` resolves all seven in `ci.yml`; seven checkouts present under `upstream/`, each verified at its rev with a clean worktree and listed in `upstream/manifest.toml`, re-derivable from `pins.toml` alone by `fetch-upstream.sh` and checked by nothing in CI. Four pins name a `path` that does not exist at their rev (`xray-core`, `sing-box`, `amneziawg-go`, `amnezia-client`) — see P21 |
-| upstream conformance | **1 of 7** pinned suites run against a Dovetail binary, checked by `conformance.yml`: `zeronet`'s raw-`TCP` `VLESS`, `trojan` and `shadowsocks` triple against `dovetail-zeronet`; the other six oracle tests need rungs it lacks, and the other six pins have no passing subset — [`conformance.md`](docs/conformance.md) |
+| upstream comparison | eleven sources pinned by commit; `check-upstream-pins.sh` resolves all eleven in `ci.yml`; eleven checkouts present under `upstream/`, each verified at its rev with a clean worktree and listed in `upstream/manifest.toml`, re-derivable from `pins.toml` alone by `fetch-upstream.sh` and checked by nothing in CI. Four pins name a `path` that does not exist at their rev (`xray-core`, `sing-box`, `amneziawg-go`, `amnezia-client`) — see P21 |
+| upstream conformance | **1 of 11** pinned suites run against a Dovetail binary, checked by `conformance.yml`: `zeronet`'s raw-`TCP` `VLESS`, `trojan` and `shadowsocks` triple against `dovetail-zeronet`; the other six oracle tests need rungs it lacks, and the other ten pins have no passing subset — [`conformance.md`](docs/conformance.md) |
 | memory safety | Miri nightly on the safe-Rust core: PASS 2026-10-03 — next check 2026-10-04 03:11 UTC (SIMD cores: differential test, not Miri) |
 | first green CI run | green 2026-10-02, all six jobs, checked by `ci.yml` run 37077244861 |
 | claim audit | every claim in this table and in `docs/`, with its checker and its verdict: [`docs/claims.md`](docs/claims.md) | audited by hand 2026-10-03 against the runs it quotes; **nothing runs the audit**, which is the one line in this table with no checker |
@@ -78,7 +78,7 @@ Details: [`chacha-xor-blocks.md`](docs/function/chacha-xor-blocks.md), [`unsafe-
 
 **1 — prove everything shipped is faster and leaner.** Bit-identical output, fewer operations, zero surviving copies: the math in [`unsafe-policy.md`](docs/unsafe-policy.md), the method in [`methodology.md`](docs/methodology.md).
 
-**2 — become a drop-in replacement.** `dovetail-core` is a *superset* of Xray-core, sing-box, xray-rust and PattNG's Xray fork — every way PattNG can connect parses, one method dials at a time ([`superset.md`](docs/arch/superset.md)). Upstream suites are meant to run against Dovetail binaries in CI, never copied here (licence-clean) — and **one does**: 1 of 7, the `zeronet` raw-`TCP` `VLESS`, `trojan` and `shadowsocks` differentials against `dovetail-zeronet`, checked by `conformance.yml`. The other six oracle tests need rungs it lacks; the other six pins have no passing subset ([`conformance.md`](docs/conformance.md)).
+**2 — become a drop-in replacement.** `dovetail-core` is a *superset* of Xray-core, sing-box, xray-rust, PattNG's Xray fork, ZeroNet/Zray, mqvpn, Aether, zeptun and slipstream — every way PattNG can connect parses, one method dials at a time ([`superset.md`](docs/arch/superset.md), full matrix below). Upstream suites are meant to run against Dovetail binaries in CI, never copied here (licence-clean) — and **one does**: 1 of 11, the `zeronet` raw-`TCP` `VLESS`, `trojan` and `shadowsocks` differentials against `dovetail-zeronet`, checked by `conformance.yml`. The other six oracle tests need rungs it lacks; the other ten pins have no passing subset ([`conformance.md`](docs/conformance.md)).
 
 ```bash
 cargo run -p dovetail-bench -- --config 'vless://...'   # the comparison table for a link
@@ -86,6 +86,78 @@ cargo run -p dovetail-zeronet -- check 'vless://...'     # parse offline; `run` 
 ```
 
 Offline by default; a live comparison needs `live=true` in `compare.yml`. Credentials never reach a report.
+
+## Connection methods: every way, who supports it
+
+Dovetail is a subset of code and a superset of connection ways: every row below
+parses, exactly one dials today, and a row moves to dials only with its
+differential proof and its benchmark gate. The `Dovetail` column is read from
+`vless::support()` / `transport.rs` where a `vless://` link can express the row;
+the rest mirror `transport.rs` until their rung lands. `Supported today by`
+means the pinned rev contains that transport (a `proxy/` entry, a `protocol/`
+entry, a CLI flag, or a config section) — not that CI runs it. Upstream suites
+are never copied here (licence-clean): sing-box is GPL-3.0, Xray-core/xray-rust
+are MPL-2.0, PattNG is GPL-3.0, Aether is AGPL-3.0, mqvpn/slipstream are
+Apache-2.0, zeptun/ZeroNet are MIT. They run unmodified from their pins.
+
+Eleven pins, all resolving, all re-derivable by `scripts/fetch-upstream.sh`:
+`xray-core` (`b26a91de`), `sing-box` (`c9922979`), `amneziawg-go` (`b5928efb`),
+`amnezia-client` (`94b51df2`), `xray-rust` (`7a4fb2dd`, `crates/`),
+`pattng` (`ad6f747c`, `V2rayNG/`), `zeronet` (`97a99734`, `crates/`),
+`mqvpn` (`b11a2f69`, `src/`), `aether` (`21e7150a`, `aether/`),
+`zeptun` (`5620e57c`, `src/`), `slipstream` (`397850b1`, `src/`).
+Aether is open source (`CluvexStudio/Aether`): it is pinned directly here, not
+only vendored as the `libaether.so` constant PattNG names.
+
+### A — proxy protocols (the share-link world)
+
+| # | method | Dovetail | supported today by |
+| --- | --- | --- | --- |
+| 1 | VLESS TCP REALITY `xtls-rprx-vision` | implemented (`vless-tcp-reality-vision`) | Xray-core (`proxy/vless` + `transport/internet/reality`), sing-box (`protocol/vless`), xray-rust (VLESS client over TCP), PattNG, ZeroNet/Zray |
+| 2 | VLESS TCP TLS (Vision optional) | planned | Xray-core, sing-box, xray-rust (TLS + REALITY), PattNG, ZeroNet |
+| 3 | VLESS TCP none, private/loopback only | planned | Xray-core, sing-box, xray-rust (documented TCP subset), PattNG, ZeroNet |
+| 4 | VLESS/TROJAN `security=none` to public (PattNG ext., plaintext) | unsafe opt-in (`allow_plaintext_to_public`) | PattNG only — upstream Xray-core refuses it |
+| 5 | TROJAN TCP TLS | planned (schema reserved) | Xray-core (`proxy/trojan`), sing-box (`protocol/trojan`), PattNG, ZeroNet |
+| 6 | VMess TCP (AEAD) | planned (AEAD differential first) | Xray-core (`proxy/vmess`), sing-box (`protocol/vmess`), PattNG, ZeroNet — xray-rust explicitly has none |
+| 7 | Shadowsocks TCP/UDP (+2022) | planned (shares the record rung) | Xray-core (`proxy/shadowsocks`, `shadowsocks_2022`), sing-box (`protocol/shadowsocks`), PattNG, ZeroNet |
+| 8 | VLESS over WS / XHTTP / gRPC / QUIC / HTTPUpgrade / KCP | planned, one rung each, never batched | Xray-core (`transport/internet/{ws,grpc,quic,kcp,httpupgrade}` + `transport/v2ray*`), sing-box (`transport/v2ray*`), PattNG, ZeroNet — xray-rust TCP only |
+| 9 | Hysteria / Hysteria2, TUIC, AnyTLS, ShadowTLS, Snell, Naive, SSH, OpenConnect/OpenVPN | planned | sing-box (`protocol/{hysteria,hysteria2,tuic,anytls,shadowtls,snell,naive,ssh}`), Xray-core (`proxy/hysteria` + `transport/internet/hysteria`), PattNG (hysteria refs) |
+| 10 | `cipherSuites` + `unsafe-*` fingerprints (PattNG ext.) | unsafe opt-in (`allow_unsafe_fingerprint`) | PattNG only — parsed and carried here, never default |
+
+### B — VPN / tunnel carriers (the `upstream/` newcomers)
+
+| # | method | Dovetail | supported today by |
+| --- | --- | --- | --- |
+| 11 | WireGuard (UDP) | planned (rung 9) | Xray-core (`proxy/wireguard`), sing-box (`protocol/wireguard`), Aether (`--wg`), PattNG, ZeroNet WARP paths |
+| 12 | AmneziaWG (WireGuard with obfuscation) | planned | amneziawg-go (`device/`, `tun/`), amnezia-client |
+| 13 | MASQUE CONNECT-IP over QUIC, RFC 9484 | planned (rung 9, quiche by default) | mqvpn (`src/`, CONNECT-IP over MP-QUIC), Aether (`--masque`, HTTP/3 or HTTP/2), sing-box (`protocol/masque`), Xray-core (`proxy/masque` + `transport/internet/masque`), PattNG |
+| 14 | MASQUE over HTTP/3 vs HTTP/2 carriers | planned | Aether (H3 default, `--h2` moves the same tunnel to TCP 443), mqvpn (HTTP/3 + datagrams) |
+| 15 | Multipath QUIC, draft-ietf-quic-multipath | planned | mqvpn (MP-QUIC + WLB family), slipstream (picoquic MP, multi-resolver parallel) |
+| 16 | Multipath schedulers `minrtt` / `wlb` / `wlb_udp_pin` / `backup_fec` | planned | mqvpn only (`mqvpn_sched_names.h`, `vpn_client.h`) |
+| 17 | Hybrid TCP lane (local TCP termination over an H3 request stream) | planned | mqvpn only (`[Hybrid]` classifier) |
+| 18 | Reorder buffer (datagram lane) + reinjection (`deadline` / `idle` / `dgram`) | planned | mqvpn only (`[Reorder]`, `Reinjection`) |
+| 19 | Nested WireGuard (`gool`, two hops) | planned | Aether only (`--gool`, `--wiw-outer` / `--wiw-inner` / `--wiw-peers`) |
+| 20 | Nested MASQUE (`mim`, tunnel inside a tunnel) | planned | Aether only (`--mim`, `--mim-outer` / `--mim-inner`) |
+| 21 | TCP-over-DNS covert channel (base32 domain + TXT, QUIC reliability) | planned | slipstream only (`src/slipstream_{client,server}*`, `docs/protocol.md`) |
+| 22 | Multi-resolver parallel + direct port-53 impersonation, DCUBIC/BBR | planned | slipstream only (`docs/usage.md`: `--resolver-address`, `--domain`, `--congestion-control`) |
+| 23 | tun2socks engine (TUN to TCP/UDP/ICMP via SOCKS5 / direct / passthrough; `userspace` / `hybrid` / `system` stacks) | planned | zeptun only (`src/config.zig` `HandlerKind`, `src/stack/`) |
+
+### C — ways no tool lets users (superset-only), plus the local surface
+
+| # | method | Dovetail | supported today by |
+| --- | --- | --- | --- |
+| 24 | Tor through the tunnel / tunnel through Tor / Tor alone (arti + `pt/` bridges `obfs4` / `webtunnel` / `snowflake`) | planned | Aether only (`--tor`, `--tor-reverse`, `--tor-only`) |
+| 25 | Upstream chaining (dial out through another SOCKS5 / HTTP CONNECT already on the machine) | planned | Aether only (`--upstream`) |
+| 26 | ClientHello fragmentation + ECH + `noize` profiles + QUIC-v2 opener | planned | Aether only (`--fragment`, `--ech`, `--noize`, `--no-quic-v2`) |
+| 27 | Zero Trust enrollment + Gateway proxy + routing rules + firewall mark | planned | Aether only (`--team`, `--gateway`, `--route-direct` / `--route-block`, `--mark`) |
+| 28 | PSK auth over TLS 1.3 + dual-stack TUN + DNS override + control API | planned | mqvpn only (`[Auth]`, `[Interface]`, `[Control]`) |
+| 29 | Fake-IP DNS + hijack + systemd-resolved handover; TSO/USO/GRO; `io_uring` / `epoll` / `kqueue` / `IOCP`; multi-queue TUN; C ABI | planned | zeptun only (`[dns]`, `[io]`, `include/zeptun.h`) |
+| 30 | Local SOCKS5 + HTTP CONNECT + TUN inbound (no auth on the proxy port by design) | planned (parser + TCP reachability only) | Aether (`--bind`, `--http-proxy`), xray-rust (SOCKS5 no-auth, HTTP CONNECT, TUN), sing-box (`protocol/{socks,tun}`), Xray-core (`proxy/{socks,http}`), ZeroNet app |
+
+One day every box above is checked: each row keeps its `planned` until its
+differential proof and its benchmark gate are green, exactly as rows 1–10
+already do in [`superset.md`](docs/arch/superset.md) and the per-method table
+in benchmark reports.
 
 ## Scope
 
