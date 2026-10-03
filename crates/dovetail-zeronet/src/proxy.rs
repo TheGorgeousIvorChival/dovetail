@@ -268,7 +268,7 @@ fn serve_socks(mut client: TcpStream, out: &Outbound) {
             relay(&client, &uplink);
         }
         Outbound::Shadowsocks(shadowsocks) => {
-            let Some((send, recv)) = crate::shadowsocks::client_handshake(
+            let Some((send, recv)) = crate::shadowsocks::client_send_handshake(
                 &mut uplink,
                 &shadowsocks.password,
                 &shadowsocks.method,

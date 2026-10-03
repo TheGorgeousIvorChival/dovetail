@@ -68,7 +68,7 @@ pub(crate) fn serve(mut stream: TcpStream, password: &str, method: &str, freedom
         return;
     }
     trace("relay starts");
-    pump_relay(&uplink, &stream, send, recv);
+    pump_relay(&uplink, &stream, send, Recv::Ready(recv));
 }
 
 /// Stderr line when `DOVETAIL_TRACE` is set, silence otherwise.
@@ -78,13 +78,13 @@ fn trace(message: &str) {
     }
 }
 
-/// Dial a `shadowsocks` server for a target: salt, sealed address, read salt.
-pub(crate) fn client_handshake(
+/// Dial a `shadowsocks` server for a target: salt and sealed address, no waiting.
+pub(crate) fn client_send_handshake(
     uplink: &mut TcpStream,
     password: &str,
     method: &str,
     target: &SocketAddr,
-) -> Option<(Cipher, Cipher)> {
+) -> Option<(Cipher, Recv)> {
     if method != "aes-256-gcm" {
         return None;
     }
@@ -97,14 +97,19 @@ pub(crate) fn client_handshake(
     push_addr(&mut addr, target, 4);
     addr.extend_from_slice(&target.port().to_be_bytes());
     seal_all(&mut send, &addr, uplink).ok()?;
-    let mut peer = [0u8; SALT_LEN];
-    read_exact(uplink, &mut peer).ok()?;
-    let recv = Cipher::new(&master, &peer)?;
-    Some((send, recv))
+    Some((send, Recv::Waiting(master)))
+}
+
+/// Receive cipher: ready, or still waiting on the peer's salt.
+pub(crate) enum Recv {
+    /// Salt read, cipher derived.
+    Ready(Cipher),
+    /// Salt unread; derived on the first opened chunk.
+    Waiting([u8; 32]),
 }
 
 /// Relay plaintext one side against sealed chunks the other, both ways to close.
-pub(crate) fn pump_relay(plain: &TcpStream, sealed: &TcpStream, send: Cipher, recv: Cipher) {
+pub(crate) fn pump_relay(plain: &TcpStream, sealed: &TcpStream, send: Cipher, recv: Recv) {
     let Ok(plain_read) = plain.try_clone() else {
         return;
     };
@@ -122,7 +127,19 @@ pub(crate) fn pump_relay(plain: &TcpStream, sealed: &TcpStream, send: Cipher, re
     let mut sealed_read = sealed_read;
     let mut plain_write = plain_write;
     let mut send = send;
-    let mut recv = recv;
+    let mut recv = match recv {
+        Recv::Ready(cipher) => cipher,
+        Recv::Waiting(master) => {
+            let mut peer = [0u8; SALT_LEN];
+            if read_exact(&mut sealed_read, &mut peer).is_err() {
+                return;
+            }
+            let Some(cipher) = Cipher::new(&master, &peer) else {
+                return;
+            };
+            cipher
+        }
+    };
     let done = thread::spawn(move || {
         let mut buf = vec![0u8; READ_CHUNK];
         while let Ok(read) = plain_read.read(&mut buf) {
@@ -363,7 +380,7 @@ mod tests {
         let target: SocketAddr = format!("127.0.0.1:{echo_port}").parse().expect("addr");
         let uplink = TcpStream::connect(("127.0.0.1", port)).expect("connects");
         let mut uplink = uplink;
-        let Some((mut send, mut recv)) = client_handshake(
+        let Some((mut send, recv)) = client_send_handshake(
             &mut uplink,
             "an-example-shared-password",
             "aes-256-gcm",
@@ -372,6 +389,14 @@ mod tests {
             panic!("handshake failed");
         };
         seal_all(&mut send, b"ping", &mut uplink).expect("seals");
+        let mut recv = match recv {
+            Recv::Ready(cipher) => cipher,
+            Recv::Waiting(master) => {
+                let mut peer = [0u8; SALT_LEN];
+                read_exact(&mut uplink, &mut peer).expect("salt");
+                Cipher::new(&master, &peer).expect("derives")
+            }
+        };
         let back = open_chunk(&mut uplink, &mut recv).expect("opens");
         assert_eq!(back, b"ping");
     }
