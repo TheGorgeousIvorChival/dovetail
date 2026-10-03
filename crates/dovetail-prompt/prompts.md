@@ -95,7 +95,7 @@ Write the page under `docs/function/` before the merge, not after: a per-archite
 ## P2 · Run the pinned upstream suites against our binaries in CI
 
 **When to use:** When a compatibility surface is about to be claimed. This is the strongest evidence available and the reason the upstream sources were fetched.
-**Status:** todo
+**Status:** done
 **Leverage:** 5
 **Effort:** large
 **Gates:** CI: `ci.yml` upstream job green on every runner in the matrix; `./scripts/check-upstream-pins.sh`
@@ -217,7 +217,7 @@ Report each finding with the rung, the length band and the input that triggers i
 ## P7 · Adversarial review of the bit-identity claim
 
 **When to use:** Before any release claim, and any time a reviewer asks how the identity check could pass a wrong core — because it has, once, by stopping short of the second group.
-**Status:** todo
+**Status:** done
 **Leverage:** 5
 **Effort:** medium
 **Gates:** `cargo test --workspace --all-features`; `cargo run --release -p dovetail-bench`
@@ -355,7 +355,7 @@ Run the port beside the original until parity holds for three consecutive green 
 ## P12 · Repair the pin `path` fields that name nothing at their own rev
 
 **When to use:** Before any slice that reads a pinned source starts, because the `path` is the field that says which tree backs the note next to it, and four of the seven currently point at a directory that is not there.
-**Status:** todo
+**Status:** done
 **Leverage:** 3
 **Effort:** small
 **Gates:** `./scripts/check-upstream-pins.sh`; CI: `ci.yml` upstream job
@@ -375,7 +375,7 @@ Repair the four values to the paths measured here, or restate each note against 
 ## P13 · Stop check-comments.sh failing on mktemp templates
 
 **When to use:** When `check-comments.sh` fails a change that carries no trace marker: its marker grep matches the six-X run in any `mktemp` template, so an atomic write-then-rename script cannot land while the gate stands as written.
-**Status:** todo
+**Status:** done
 **Leverage:** 3
 **Effort:** small
 **Gates:** `./scripts/check-comments.sh` green on a tree containing an `mktemp` template; CI: `ci.yml` lint job green
@@ -390,7 +390,7 @@ Report the match count before and after on this tree. A gate that cannot disting
 ## P14 · WebSocket transport for VLESS
 
 **When to use:** When the `vless_over_websocket` oracle failure is the next one to clear: the handshake is closed after the first byte.
-**Status:** todo
+**Status:** done
 **Leverage:** 4
 **Effort:** medium
 **Gates:** `cargo test --workspace`; CI: `conformance.yml` green with the websocket oracle test executed against `dovetail-zeronet`
@@ -404,7 +404,7 @@ Teach `dovetail-zeronet` the `ws` carrier for the two roles it already plays: ac
 ## P15 · HTTPUpgrade and gRPC transports for VLESS
 
 **When to use:** When the `httpupgrade` and `grpc` oracle failures are the next ones to clear: one fails the handshake, the other times out on echo.
-**Status:** todo
+**Status:** done
 **Leverage:** 3
 **Effort:** large
 **Gates:** `cargo test --workspace`; CI: `conformance.yml` green with both oracle tests executed against `dovetail-zeronet`
@@ -561,6 +561,36 @@ Read how each implementation carries it before writing it: `upstream/xray-core/t
 The second row is a different kind of problem and must be settled before the first is claimed. `rust_socks_client_reaches_target_through_remote_xhttp_profile` reads its profile through `read_owner_only_text_from_env`, which panics unless `XRAY_REMOTE_XHTTP_CONFIG` names a regular file with no group or other bits — so a suite command that runs it has to write that file and set its mode, and `scripts/check-fixture-safety.sh` governs the committed tree, not a file the harness writes at run time. Answer that first: if the fixture cannot be produced from the harness without weakening the mode assertion the pinned tree ships, say so and leave the row named here rather than editing their test.
 
 Read `upstream/xray-core/transport/internet/splithttp/` and `upstream/xray-rust/crates/xray-transport/src/stream/xhttp/`, then `upstream/zeronet/crates/zero-transport/src/xhttp.rs` and `xhttp_request.rs`, and implement the narrowest form that carries one `VLESS` request and one response. `xhttp` moves the payload across several HTTP requests with padding and placement rules per mode; a slice that implements one mode and names it is further along than a slice that stubs the carrier and reports the row green.
+```
+
+## P25 · Serve the `tls` rows with a rustls server role
+
+**When to use:** When `rust_socks_client_reaches_echo_server_through_local_xray_vless_tls` is the next red row to clear: the test builds a real Xray Go server today and swaps in this binary via `XRAY_VLESS_FULL_BINARY`, and this binary binds nothing because `serve_file` refuses every `tls` inbound rather than serving it in the clear.
+**Status:** todo
+**Leverage:** 4
+**Effort:** large
+**Gates:** `cargo test --workspace`; CI: `conformance.yml` green with `rust_socks_client_reaches_echo_server_through_local_xray_vless_tls` added `--exact` to the enabled `xray-rust` suite command and executed unmodified
+**Depends on:** P9
+**Touches:** crates/dovetail-zeronet/src/proxy.rs, crates/dovetail-core/src/tls/mod.rs, crates/dovetail-core/src/tls/rustls_backend.rs, upstream/pins.toml, docs/conformance.md
+**Random weight:** 1
+
+```text
+Read the `certificateFile`/`keyFile` pair out of `streamSettings.tlsSettings.certificates` and serve `TLS` inside this binary through the existing `TlsProvider` interface, which today only opens client sessions: the test writes a self-signed pair per run and pins it on its own side, so there is no test CA to vendor and no fingerprint to mimic. `VLESS` decode and relay inside the session stay exactly what the raw-`TCP` path does; only the outer layer changes, which is why this slice flips one row and names it rather than claiming the carriers. The `ws_tls`, `httpupgrade_tls` and `grpc_tls` rows keep their `TLS` inside carriers this binary already frames, so each joins the suite command only with its own passing run, never batched onto this one.
+```
+
+## P26 · Serve the `REALITY` rows with a uTLS-parity handshake
+
+**When to use:** When the seven `reality`/`vision` rows are all that is red in the `xray-rust` table and `P25` is green: the client opens with a fingerprinted `ClientHello`, authenticates by `shortId` against an `X25519` key, and expects `TLS`-shaped records after, none of which the `rustls` server role from `P25` produces on its own.
+**Status:** todo
+**Leverage:** 4
+**Effort:** large
+**Gates:** `cargo test --workspace`; CI: `conformance.yml` green with the seven `reality`/`vision` rows added `--exact` to the enabled `xray-rust` suite command and executed unmodified
+**Depends on:** P25
+**Touches:** crates/dovetail-zeronet/src/proxy.rs, crates/dovetail-core/src/tls/mod.rs, crates/dovetail-core/src/tls/rustls_backend.rs, upstream/pins.toml, docs/conformance.md
+**Random weight:** 1
+
+```text
+Read `upstream/xray-core/transport/internet/reality/reality.go` for the exchange this has to match — ephemeral `X25519` against `realitySettings.privateKey`, `shortIds` authentication, session tickets — then `upstream/xray-rust/crates/xray-transport/tests/reality_rustls_tests.rs` and `utls_tls_shaping_tests.rs` for the exact shaping the tests assert, and write the smaller handshake that is byte-identical on the wire and carries no copied lines. `dest` fallback and `show` output stay out; a server that answers `REALITY` for its own `shortId` set and closes everything else is further along than one that dials out to check. The `vision` padding commands ride inside the session exactly as `Xray-core`'s `VisionReader`/`VisionWriter` frame them, which is a second framing to prove, not a flag to set.
 ```
 
 ## Reading this file as a roadmap
