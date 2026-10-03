@@ -59,7 +59,7 @@ pub(crate) fn serve_file(path: &str) -> ! {
                     inbounds += 1;
                 }
                 "shadowsocks" => {
-                    let password = inbound_password(inbound);
+                    let password = inbound_ss_password(inbound);
                     let method = inbound_method(inbound);
                     let address_clone = address.clone();
                     let role = Role::Shadowsocks {
@@ -518,6 +518,16 @@ fn inbound_method(inbound: &Json) -> String {
     inbound
         .get("settings")
         .and_then(|s| s.get("method"))
+        .and_then(Json::as_str)
+        .unwrap_or("")
+        .to_owned()
+}
+
+/// Inbound `shadowsocks` password, sitting beside `method`, empty when absent.
+pub(crate) fn inbound_ss_password(inbound: &Json) -> String {
+    inbound
+        .get("settings")
+        .and_then(|s| s.get("password"))
         .and_then(Json::as_str)
         .unwrap_or("")
         .to_owned()
