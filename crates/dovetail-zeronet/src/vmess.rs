@@ -450,8 +450,13 @@ pub(crate) struct Flow {
     cipher: Cipher,
     /// `AES` cipher when negotiated.
     aes: Option<aes_gcm::Aes128Gcm>,
-    /// `ChaCha` cipher when negotiated.
-    chacha: Option<chacha20poly1305::ChaCha20Poly1305>,
+    /// `ChaCha20-Poly1305` key when negotiated.
+    ///
+    /// The key, not a cipher object: [`dovetail_core::aead`] takes the key and
+    /// the nonce per frame and derives the `Poly1305` key itself, which is what
+    /// `RFC 8439` section 2.6 asks for and what the crate did too. Holding an
+    /// object here would mean holding state this path never reads.
+    chacha: Option<[u8; 32]>,
     /// Direction iv, seeding nonces and masking.
     iv: [u8; 16],
     /// Frames sealed or opened so far.
@@ -478,13 +483,8 @@ impl Flow {
         };
         let (aes, chacha) = match actual {
             Cipher::Aes => (Some(aes_gcm::Aes128Gcm::new_from_slice(key).ok()?), None),
-            Cipher::Chacha => {
-                let expanded = chacha_key(key);
-                (
-                    None,
-                    Some(chacha20poly1305::ChaCha20Poly1305::new_from_slice(&expanded).ok()?),
-                )
-            }
+            // `chacha_key` cannot fail: it is two `MD5`s into a `[u8; 32]`.
+            Cipher::Chacha => (None, Some(chacha_key(key))),
             Cipher::None => (None, None),
             Cipher::Auto => return None,
         };
@@ -525,20 +525,19 @@ impl Flow {
                     Err(_) => false,
                 }
             }
-            (None, Some(chacha)) => {
-                use chacha20poly1305::aead::AeadInPlace as _;
+            (None, Some(key)) => {
+                // Sealed in place: `out[at..]` already holds the plaintext, and
+                // `C = P XOR keystream` means it does not have to be handed over
+                // twice to be turned into the ciphertext that goes out.
                 let nonce = self.nonce();
-                match chacha.encrypt_in_place_detached(
-                    chacha20poly1305::Nonce::from_slice(&nonce),
+                let tag = dovetail_core::aead::chacha20_poly1305_seal_in_place(
+                    key,
+                    &nonce,
                     b"",
                     &mut out[at..],
-                ) {
-                    Ok(tag) => {
-                        out.extend_from_slice(&tag);
-                        true
-                    }
-                    Err(_) => false,
-                }
+                );
+                out.extend_from_slice(&tag);
+                true
             }
             (None, None) => true,
             _ => false,
@@ -574,22 +573,20 @@ impl Flow {
                 .ok()?;
                 split
             }
-            (None, Some(chacha)) => {
-                use chacha20poly1305::aead::AeadInPlace as _;
+            (None, Some(key)) => {
                 if chunk.len() < TAG_LEN {
                     return None;
                 }
                 let nonce = self.nonce();
                 let split = chunk.len() - TAG_LEN;
                 let (body, tag) = chunk.split_at_mut(split);
-                chacha
-                    .decrypt_in_place_detached(
-                        chacha20poly1305::Nonce::from_slice(&nonce),
-                        b"",
-                        body,
-                        chacha20poly1305::Tag::from_slice(tag),
-                    )
-                    .ok()?;
+                // `split` is `chunk.len() - TAG_LEN`, so `tag` is exactly
+                // sixteen bytes; `try_into` is the check that says so rather
+                // than an assertion.
+                let tag: &[u8; TAG_LEN] = <&[u8; TAG_LEN]>::try_from(&*tag).ok()?;
+                dovetail_core::aead::chacha20_poly1305_decrypt_in_place(
+                    key, &nonce, b"", body, tag,
+                )?;
                 split
             }
             (None, None) => chunk.len(),
@@ -1988,5 +1985,96 @@ mod tests {
             }
         }
         assert_eq!(refused, 3);
+    }
+
+    /// The `ChaCha20-Poly1305` data path, against the crate it replaced.
+    ///
+    /// The rest of these tests round-trip a `Flow` against another `Flow`, which
+    /// is a real test of the framing and of the counter, and cannot tell whether
+    /// the bytes on the wire are the bytes `VMess` peers expect. This one does:
+    /// the same frame sealed here, and sealed by `chacha20poly1305` under the
+    /// same key and nonce, have to be the same sixteen bytes plus the same tag.
+    ///
+    /// The key expansion and the nonce construction are the two places `VMess`
+    /// is specific — `MD5` twice into a 32-byte key, and the frame counter in
+    /// the first two bytes big-endian — so both are used from the same
+    /// functions the shipped path uses rather than retyped here.
+    #[test]
+    fn the_chacha_data_frames_are_the_crate_it_replaced() {
+        use chacha20poly1305::aead::AeadInPlace;
+        use chacha20poly1305::{ChaCha20Poly1305, KeyInit as _, Nonce};
+
+        let data_key = [0x3cu8; 16];
+        // Distinct bytes, so a slice that starts one byte early or one byte late
+        // is a different nonce rather than the same one.
+        let data_iv: [u8; 16] = std::array::from_fn(|i| 0x10u8.wrapping_add(i as u8));
+        let options = OPT_STREAM | OPT_MASK;
+
+        // The two `VMess`-specific inputs, pinned rather than recomputed.
+        //
+        // Recomputing them here from `chacha_key` and from `Flow::nonce` would
+        // make this a test of the `AEAD` alone: a frame counter in the wrong
+        // byte order, or an `iv` slice off by one, would change both sides at
+        // once and the comparison would still pass. These are the bytes, so a
+        // change to either function has to be a change to this list too.
+        let want_key: [u8; 32] = [
+            0x8c, 0xad, 0xb9, 0xb0, 0x5f, 0xd7, 0x0f, 0x16, 0xab, 0x6b, 0xea, 0xd8, 0x48, 0x90,
+            0x14, 0x5d, 0xf7, 0xa8, 0xe4, 0xab, 0xb4, 0x63, 0x92, 0x9f, 0x06, 0x32, 0x00, 0xed,
+            0x60, 0x0b, 0xf6, 0xa5,
+        ];
+        assert_eq!(
+            chacha_key(&data_key),
+            want_key,
+            "the data key is md5(key) then md5 of that, concatenated"
+        );
+
+        for len in (0..=40usize).chain([63, 64, 65, 127, 128, 129, 1024, 4096]) {
+            let plain: Vec<u8> = (0..len)
+                .map(|i| (i as u8).wrapping_mul(61).wrapping_add(5))
+                .collect();
+
+            // Several frames off *one* flow, not one frame per flow: the frame
+            // counter is part of the nonce, so a test that only ever seals
+            // counter zero cannot tell a big-endian counter from a little-endian
+            // one, or a counter that fails to advance from one that does not.
+            let mut flow = Flow::fresh(Cipher::Chacha, &data_key, &data_iv, options, &data_iv)
+                .expect("a chacha flow");
+            let cipher = ChaCha20Poly1305::new_from_slice(&want_key).expect("crate key");
+
+            for frame in 0..3u8 {
+                // The nonce this frame uses, read *before* sealing: `seal_onto`
+                // advances the counter, and the frame on the wire is the one with
+                // the counter it had going in.
+                let nonce = flow.nonce();
+                let mut want_nonce = [0u8; 12];
+                want_nonce[..2].copy_from_slice(&(frame as u16).to_be_bytes());
+                want_nonce[2..].copy_from_slice(&data_iv[2..12]);
+                assert_eq!(nonce, want_nonce, "frame {frame}: counter then the iv tail");
+                let mut ours = Vec::new();
+                assert!(flow.seal_onto(&plain, &mut ours), "seals frame {len}");
+
+                // What the crate puts on the wire for the same frame.
+                let mut want = plain.clone();
+                let want_tag = cipher
+                    .encrypt_in_place_detached(Nonce::from_slice(&want_nonce), b"", &mut want)
+                    .expect("crate seals");
+                assert_eq!(
+                    ours,
+                    [want.as_slice(), want_tag.as_slice()].concat(),
+                    "length {len} frame {frame} is the crate's bytes"
+                );
+
+                // And it opens back to the plaintext, which is what the other
+                // direction does with it.
+                let mut recv = Flow::fresh(Cipher::Chacha, &data_key, &data_iv, options, &data_iv)
+                    .expect("a chacha flow");
+                for _ in 0..frame {
+                    recv.counter += 1;
+                }
+                let n = recv.open_chunk(&mut ours).expect("opens");
+                assert_eq!(n, len, "length {len} frame {frame} opens to its own length");
+                assert_eq!(recv.iv, data_iv, "opening does not disturb the iv");
+            }
+        }
     }
 }

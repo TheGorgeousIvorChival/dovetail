@@ -21,3 +21,13 @@ bench-reference = []
 # used by the shipped path: if it were, "bit-identical" would be circular.
 chacha20 = "0.9"
 rustls = { workspace = true, features = ["std", "ring"] }
+
+[dev-dependencies]
+# The `AEAD` this crate replaces, used *only* by the differential test in
+# `aead.rs` that decides whether the replacement is allowed in. A dev-dependency
+# is not linked into a shipped build, which is the whole point: if the shipped
+# path could reach the reference, "bit-identical" would be a statement about
+# comparing this crate against itself.
+chacha20poly1305 = "0.10"
+
+poly1305 = "0.8"
