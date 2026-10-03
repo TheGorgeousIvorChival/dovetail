@@ -842,12 +842,12 @@ Do not take the opportunity to shrink `vmess.rs` itself. It is 1,014 lines of co
 ```text
 `grpc.rs` currently answers `ZeroNet`'s oracle and not `xray-rust`'s, both measured in `conformance.yml` run `37125321800`: the plain-`gRPC` row fails with `read echo failed: early eof`, the server-speaks-first row with `read greeting: early eof`, and the multi-mode bulk row with `Connection reset by peer`. Three failures, one carrier, two oracles — so the framing is narrower than both rather than wrong, and the narrower half is whatever `ZeroNet`'s oracle does not send.
 
-Read both pinned implementations for what the other one sends: `upstream/xray-core/transport/internet/grpc/` and `upstream/xray-rust/crates/xray-transport/src/` under `grpc`, then `upstream/zeronet/crates/zero-transport/`. The three named tests are the specification; add each to the `xray-rust` suite command in `upstream/pins.toml` only as it goes green, and keep `vless_over_grpc_matches_the_oracle` in the `zeronet` command so a fix that breaks the other oracle is caught by the same run. A carrier that passes one suite because the other was never run is the failure this slice exists to end.
+Read both pinned implementations for what the other one sends: `upstream/xray-core/transport/internet/grpc/` and `upstream/xray-rust/crates/xray-transport/src/stream/grpc/`, then `upstream/zeronet/crates/zero-transport/src/grpc.rs`. The three named tests are the specification; add each to the `xray-rust` suite command in `upstream/pins.toml` only as it goes green, and keep `vless_over_grpc_matches_the_oracle` in the `zeronet` command so a fix that breaks the other oracle is caught by the same run. A carrier that passes one suite because the other was never run is the failure this slice exists to end.
 ```
 
 ## P37 · Serve the early-data rows the two `ws` oracles never asked for
 
-**When to use:** When `rust_socks_client_reaches_echo_server_through_local_xray_vless_ws_early_data` and `rust_socks_client_reaches_echo_server_through_local_xray_vless_httpupgrade_early_data` are red while their non-early-data twins went green in P27 and P28: neither `xray_oracle` nor `xray_oracle`'s carrier differentials send early data, so two rows shipped with no suite behind them.
+**When to use:** When `rust_socks_client_reaches_echo_server_through_local_xray_vless_ws_early_data` and `rust_socks_client_reaches_echo_server_through_local_xray_vless_httpupgrade_early_data` are red while their non-early-data twins went green in P27 and P28: neither of the two enabled oracles sends early data, so two rows shipped with no suite behind them.
 **Status:** todo
 **Leverage:** 2
 **Effort:** medium
@@ -859,7 +859,7 @@ Read both pinned implementations for what the other one sends: `upstream/xray-co
 ```text
 Early data is the payload that arrives in the same write as the upgrade request, before the `101`. `ws.rs` reads it out of `sec-websocket-protocol` on accept and `httpupgrade.rs` does not carry it at all; measured in `conformance.yml` run `37125321800`, the `ws` row fails with `read echo failed: early eof` and the `httpupgrade` row with `socks connect rejected: [5, 1, 0, 1]`. The two fail differently, so they are two halves of one missing behaviour rather than one bug seen twice.
 
-Read how each implementation carries it before writing it: `upstream/xray-core/transport/internet/websocket/` and `httpupgrade` in the same tree, `upstream/xray-rust/crates/xray-transport/` under `ws` and `httpupgrade`, then `upstream/zeronet/crates/zero-transport/`. Where the four disagree on who masks, who chunks, or who closes, say which you followed and why — an early-data carrier that works against one client and silently truncates against another is worse than one that refuses it.
+Read how each implementation carries it before writing it: `upstream/xray-core/transport/internet/websocket/` and `httpupgrade/` in the same tree, `upstream/xray-rust/crates/xray-transport/src/stream/` under `websocket.rs` and `httpupgrade.rs`, then `upstream/zeronet/crates/zero-transport/src/ws/` and `httpupgrade.rs`. Where the four disagree on who masks, who chunks, or who closes, say which you followed and why — an early-data carrier that works against one client and silently truncates against another is worse than one that refuses it.
 ```
 
 ## P38 · Answer the xhttp rows, including the one that needs a file it is not given
@@ -876,9 +876,9 @@ Read how each implementation carries it before writing it: `upstream/xray-core/t
 ```text
 `xhttp` is the one carrier in this tree with no implementation at all, so `dovetail-zeronet` serves a `network: xhttp` inbound as raw `TCP` and the bulk flow dies with `Connection reset by peer` — measured in `conformance.yml` run `37125321800`. P28 named it as out of scope and said it gets its own; this is that.
 
-The second row is a different kind of problem and must be settled before the first is claimed. `rust_socks_client_reaches_target_through_remote_xhttp_profile` reads a config path from `XRAY_REMOTE_XHTTP_CONFIG` and asserts the file is owner-only before it dials anything, so a suite command that runs it must create that file and prove its mode, and `scripts/check-fixture-safety.sh` is what decides whether a written config belongs in CI at all. Answer that first: if the fixture cannot be made owner-only from the harness, say so and leave the row named here rather than weakening the assertion the pinned tree ships.
+The second row is a different kind of problem and must be settled before the first is claimed. `rust_socks_client_reaches_target_through_remote_xhttp_profile` reads its profile through `read_owner_only_text_from_env`, which panics unless `XRAY_REMOTE_XHTTP_CONFIG` names a regular file with no group or other bits — so a suite command that runs it has to write that file and set its mode, and `scripts/check-fixture-safety.sh` governs the committed tree, not a file the harness writes at run time. Answer that first: if the fixture cannot be produced from the harness without weakening the mode assertion the pinned tree ships, say so and leave the row named here rather than editing their test.
 
-Read `upstream/xray-core/transport/internet/splithttp/` and `upstream/xray-rust/crates/xray-transport/` under `xhttp`, then `upstream/zeronet/crates/zero-transport/`, and implement the narrowest form that carries one `VLESS` request and one response. `xhttp` moves the payload across several HTTP requests with padding and placement rules per mode; a slice that implements one mode and names it is further along than a slice that stubs the carrier and reports the row green.
+Read `upstream/xray-core/transport/internet/splithttp/` and `upstream/xray-rust/crates/xray-transport/src/stream/xhttp/`, then `upstream/zeronet/crates/zero-transport/src/xhttp.rs` and `xhttp_request.rs`, and implement the narrowest form that carries one `VLESS` request and one response. `xhttp` moves the payload across several HTTP requests with padding and placement rules per mode; a slice that implements one mode and names it is further along than a slice that stubs the carrier and reports the row green.
 ```
 
 ## Reading this file as a roadmap
