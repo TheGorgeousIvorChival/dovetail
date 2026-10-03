@@ -655,12 +655,10 @@ mod tests {
         let server = TcpListener::bind("127.0.0.1:0").expect("binds");
         let port = server.local_addr().expect("addr").port();
         thread::spawn(move || {
-            let (stream, _) = server.accept().expect("accepts");
-            serve_trojan(stream, "an-example-shared-password", true);
-        });
-        thread::spawn(move || {
-            let (stream, _) = server.accept().expect("accepts");
-            serve_trojan(stream, "an-example-shared-password", true);
+            for stream in server.incoming().take(2) {
+                let Ok(stream) = stream else { continue };
+                thread::spawn(move || serve_trojan(stream, "an-example-shared-password", true));
+            }
         });
         let mut good = TcpStream::connect(("127.0.0.1", port)).expect("connects");
         let mut header = Vec::new();
