@@ -73,7 +73,7 @@ Verdict vocabulary, and nothing else:
 | "Quiche is the default QUIC" | nothing: `quiche` is in no manifest | **no checker** — a decision rule for a rung that does not exist |
 | every way PattNG can connect parses | `vless::tests::unknown_transports_parse_but_stay_planned`, plus `support()` for the rows the format can express | green for the rows a link can name; the 10-row matrix exists only in a benchmark report |
 | one method dials at a time | `vless::support()` and `dovetail-zeronet run`'s TCP reachability | green |
-| upstream suites run against Dovetail binaries | `conformance.yml` run 37101365980 via `run-upstream-suite.sh`: 1 of 7 ran green (`zeronet` raw-`TCP` `VLESS` vs `dovetail-zeronet` at `97a99734`), 6 skipped | green for the subset — the other eight oracle tests need transports the binary closes on; the script still refuses a `PASS` naming a binary it did not execute |
+| upstream suites run against Dovetail binaries | `conformance.yml` run 37101909935 via `run-upstream-suite.sh`: all 17 `xray_oracle` tests at `97a99734` execute unmodified against `dovetail-zeronet` through `ZRAY_XRAY_BINARY` — 2 pass, 15 fail by name, 6 pins skipped | green for the two the gate names; the other fifteen need protocols, transports or REALITY the binary does not serve. The script refuses a `PASS` naming a binary it did not execute, and now also fails a test that passes without `gate_tests` naming it |
 | `dovetail-zeronet check` parses offline, `run` dials TCP and sends nothing | the two verbs in `crates/dovetail-zeronet/src/main.rs` | green, by reading; the newer `version`, `x25519` and `run -c` verbs are covered by `proxy::tests` and `json::tests` in the `ci.yml` test matrix |
 | every slice in `prompts.md` carries status, leverage, effort, gates, dependencies | `dovetail-prompt check`, run by `ci.yml` `the prompt library is well formed`, run 37101366003 | green, 0 errors, 29 prompts |
 
@@ -131,8 +131,8 @@ Verdict vocabulary, and nothing else:
 
 | claim | checked by | verdict |
 | --- | --- | --- |
-| "running upstream suites **against Dovetail binaries** in CI" | `zeronet` points its suite at `dovetail-zeronet` via `ZRAY_XRAY_BINARY`; six entries are `test_enabled = false` and skip | green for the 1-test subset, measured in run 37101365980 — the doc says 1 of 7 and names the eight excluded oracle tests with what each got instead of a listener |
-| `test_enabled = true` means the suite runs on every push | `conformance.yml` → `run-upstream-suite.sh`, run 37101365980: `RUNNING: zeronet …`, then `PASS: zeronet suite green against dovetail-zeronet` | green, and the log line names the binary and the pin |
+| "running upstream suites **against Dovetail binaries** in CI" | `run-upstream-suite.sh` injects `dovetail-zeronet` through `ZRAY_XRAY_BINARY`; run 37101909935 | **green** — all 17 `xray_oracle` tests execute unedited against the binary, 2 pass and are the gate, 15 fail by name. A test that passes without the gate naming it fails the job, so the count is checked rather than narrated |
+| `test_enabled = true` means the suite runs on every push | `conformance.yml` → `run-upstream-suite.sh`: `RUNNING: zeronet @ <rev> against Dovetail binary dovetail-zeronet via ZRAY_XRAY_BINARY`, then `MEASURED:` and `PASS:` lines naming both | green, and the log line names the binary and the pin |
 | `test_enabled = false` means the job is created, skips, and prints the reason | the same log: six `SKIPPED:` lines, each naming the pin | green |
 | a suite flips to `true` only when the benchmark gate is green on all four ISA runners | `zeronet` is `true` as the P19 differential subset without a benchmark gate behind it | **exception, named** — P19's own gate authorizes the flip and the pin note says so; the general rule still holds for every other entry |
 | the seven revs and enabled bits in the current-state table | `upstream/pins.toml` | green: six `false`, one `true`, all match |
@@ -192,7 +192,7 @@ Verdict vocabulary, and nothing else:
 | finding | recorded as |
 | --- | --- |
 | gate 2 could not fail on "no work generated and discarded", because `fill_exact` returned the formula | P18, **done**: the count is the ladder's, and a test feeds the comparison a count one block high and one block low and requires it to reject both |
-| no upstream suite runs against a Dovetail binary, and `docs/conformance.md` no longer says one does | `docs/conformance.md` states 0 of 7 with the per-pin seam table | **green** — the doc and the mechanism now agree |
+| no upstream suite runs against a Dovetail binary, and `docs/conformance.md` no longer says one does | `docs/conformance.md` states 0 of 7 with the per-pin seam table | **stale** — superseded by `conformance.yml` run `37101909935`: one suite executes a Dovetail binary and the doc now reports 2 of its 17 tests passing |
 | `xray-core` is `test_enabled = true` while the benchmark gate is red on two of four runners, which the doc's own flip rule forbids | `upstream/pins.toml`, `test_enabled = false` | **green** — the entry was disabled; it ran upstream code only |
 | the one-block timing band was a tie no bar could certify | P17, now **done**: `TIMING_MIN = 65`, so gate 3 times 227 lengths from 65 B up and gate 1 keeps the 64 short ones byte-for-byte. The consequence to keep in view: no runner now produces a number for 1-64 B, on any architecture. |
 | Miri has not run on a tree that contains `chacha::sse2` | the status table names the run and its commit |

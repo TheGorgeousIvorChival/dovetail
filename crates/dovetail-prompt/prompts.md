@@ -722,6 +722,23 @@ Teach `dovetail-zeronet` the two remaining `HTTP`-family carriers P19 measured f
 Flip the `xray-rust` pin to `test_enabled = true` with `dovetail_binary = "dovetail-zeronet"` and the suite command its interop tests need, injected via `XRAY_VLESS_FULL_BINARY` — the seam the pinned tree already reads. The binary already answers `run -config`; what was missing was the `REALITY` behavior P15 owns, so this slice contains no transport code, only the flip and the per-test report by name. A subset that passes is a subset.
 ```
 
+## P30 · Make the proof column name the suite that actually ran
+
+**When to use:** Before the next rung reports itself proved in a benchmark table, because the report's per-method matrix prints rung 1's proof as `xray-core suite enabled` while `upstream/pins.toml` carries `test_enabled = false` for that pin and nothing checks the string.
+**Status:** todo
+**Leverage:** 3
+**Effort:** small
+**Gates:** `cargo run --locked --release -p dovetail-bench` prints no enabled-suite claim that `upstream/pins.toml` does not carry; CI: `bench.yml` green
+**Depends on:** P19
+**Touches:** crates/dovetail-bench/src/methods.rs, upstream/pins.toml
+**Random weight:** 1
+
+```text
+Row 1 of the per-method proof matrix in `crates/dovetail-bench/src/methods.rs` ends its proof column with `xray-core suite enabled`, and every benchmark report publishes it. That pin is `test_enabled = false`; the suite that executes a Dovetail binary at `97a99734` is `zeronet`, through `ZRAY_XRAY_BINARY`. Nothing reads the string, so the report has been asserting an enablement no run performs.
+
+Make the claim checkable instead of narrated: either read the enabled bits out of `upstream/pins.toml` at report time the way the status cells are already read out of `VlessLink::support`, so a flip moves the sentence with it, or drop the clause and let `docs/conformance.md` be the one place that says which suite ran. Say which, and delete the other. Then state what actually proves rung 1, which today is `vless::tests` plus gates 1-3 — not a suite of Xray's.
+```
+
 ## Reading this file as a roadmap
 
 The graph is the point, and it is not a decoration: `dovetail-prompt next` ranks ready slices by leverage, breaks ties towards the smaller one, leaves out the ones waiting on a decision, and reports what each slice unblocks. `P2` is ahead of everything because most of the rest of the roadmap depends on it, which is the kind of thing that is obvious once and invisible otherwise.

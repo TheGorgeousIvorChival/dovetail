@@ -9,7 +9,10 @@ name: conformance
 # Disabled suites are skipped with the rung reason printed, so the gap is
 # named rather than silent. See `docs/conformance.md`.
 #
-# A suite flips to enabled only with its rung's differential proof green.
+# A suite flips to enabled only with its rung's differential proof green. An
+# enabled suite runs its whole unmodified command: `gate_tests` in pins.toml
+# names the subset allowed to be red, and run-upstream-suite.sh prints every
+# test's verdict either way.
 
 on:
   push:
