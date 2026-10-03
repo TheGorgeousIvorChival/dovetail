@@ -20,6 +20,9 @@
 //! connection without it would be a lie the differential test cannot catch.
 //! See `docs/arch/superset.md` for the order.
 
+mod json;
+mod proxy;
+
 use dovetail_core::transport::Support;
 use std::io::Write as _;
 use std::time::Duration;
@@ -28,6 +31,9 @@ fn usage() -> ! {
     eprintln!("usage:");
     eprintln!("  dovetail-zeronet check <vless://...>   parse + support + header len (no network)");
     eprintln!("  dovetail-zeronet run <vless://...>     check + TCP reachability (sends nothing)");
+    eprintln!("  dovetail-zeronet version                print the serving binary's version");
+    eprintln!("  dovetail-zeronet x25519                 print a fresh X25519 keypair");
+    eprintln!("  dovetail-zeronet run -c <config.json>   serve inbounds until killed");
     std::process::exit(2);
 }
 
@@ -115,13 +121,40 @@ fn cmd_run(link_str: &str) {
 fn main() {
     let mut args = std::env::args().skip(1);
     let cmd = args.next().unwrap_or_else(|| usage());
-    let link = args.next().unwrap_or_else(|| usage());
-    if args.next().is_some() {
-        usage();
-    }
     match cmd.as_str() {
-        "check" => cmd_check(&link),
-        "run" => cmd_run(&link),
+        "check" => {
+            let link = args.next().unwrap_or_else(|| usage());
+            if args.next().is_some() {
+                usage();
+            }
+            cmd_check(&link);
+        }
+        "run" => {
+            let next = args.next().unwrap_or_else(|| usage());
+            if next == "-c" || next == "-config" {
+                let file = args.next().unwrap_or_else(|| usage());
+                if args.next().is_some() {
+                    usage();
+                }
+                proxy::serve_file(&file);
+            }
+            if args.next().is_some() {
+                usage();
+            }
+            cmd_run(&next);
+        }
+        "version" => {
+            if args.next().is_some() {
+                usage();
+            }
+            proxy::print_version();
+        }
+        "x25519" => {
+            if args.next().is_some() {
+                usage();
+            }
+            proxy::print_x25519();
+        }
         _ => usage(),
     }
 }
