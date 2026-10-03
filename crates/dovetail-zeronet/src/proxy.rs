@@ -173,12 +173,24 @@ fn relay(client: &TcpStream, target: &TcpStream) {
     let Ok(target_read) = target.try_clone() else {
         return;
     };
+    let Ok(target_write) = target.try_clone() else {
+        return;
+    };
+    let Ok(client_write) = client.try_clone() else {
+        return;
+    };
+    let mut client_read = client_read;
+    let mut target_write = target_write;
+    let mut target_read = target_read;
+    let mut client_write = client_write;
     let done = thread::spawn(move || {
-        let _ = std::io::copy(&mut &client_read, &mut &target);
+        let _ = std::io::copy(&mut client_read, &mut target_write);
         let _ = client_read.shutdown(Shutdown::Both);
+        let _ = target_write.shutdown(Shutdown::Both);
     });
-    let _ = std::io::copy(&mut &target_read, &mut &client);
+    let _ = std::io::copy(&mut target_read, &mut client_write);
     let _ = target_read.shutdown(Shutdown::Both);
+    let _ = client_write.shutdown(Shutdown::Both);
     let _ = done.join();
 }
 
