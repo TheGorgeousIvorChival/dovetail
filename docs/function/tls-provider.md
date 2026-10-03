@@ -53,6 +53,6 @@ Every variant rustls 0.23 defines is listed explicitly anyway, so the classifica
 
 | backend | compiles here | tested here |
 | --- | --- | --- |
-| `rustls` | yes — `ci.yml` builds it on every runner in the matrix | **no. There is no test in `tls/` at all**: no handshake, no negative case, nothing |
+| `rustls` | yes — `ci.yml` builds it on every runner in the matrix | yes — `rustls_backend.rs` runs a loopback handshake, a wrong-name refusal and an ALPN refusal in `cargo test` |
 
-Nothing checks the handshake, so nothing claims it. `crates/dovetail-core/src/tls/` contains zero `#[test]`; the slice that writes them is P6, and until they exist the honest line is that the adapter compiles on three operating systems and has never dialled. A "tested here" cell for a backend with no tests in its module is the exact shape of claim this table exists to refuse ([`claims.md`](claims.md)).
+Three tests check the handshake, so the adapter claims a connection it has completed: a loopback handshake with echo and negotiated ALPN, a mismatched certificate name refused as `BadCertificate`, and a refused ALPN refused as `NoSharedCipher`. What is not claimed is interop against any other stack — the peer in all three is rustls itself, which is also why `suites` is read from the stack rather than written here.

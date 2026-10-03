@@ -59,7 +59,9 @@ impl<S: Stream> RustlsProvider<S> {
         .map_err(|e| TlsError::Other(format!("rustls protocol versions: {e}")))?
         .with_root_certificates(roots);
 
-        Ok(Arc::new(builder.with_no_client_auth()))
+        let mut config = builder.with_no_client_auth();
+        config.alpn_protocols.clone_from(&cfg.alpn);
+        Ok(Arc::new(config))
     }
 
     /// Open a client session over `io`, without starting the handshake.
@@ -80,7 +82,9 @@ impl<S: Stream> RustlsProvider<S> {
     /// done.
     fn drive(&mut self) -> Result<(), TlsError> {
         while self.conn.is_handshaking() {
-            self.conn.complete_io(&mut self.io)?;
+            if let Err(e) = self.conn.complete_io(&mut self.io) {
+                return Err(recover(e));
+            }
         }
         // Leaving the loop is what flushes rustls' post-handshake key update,
         // which must happen before plaintext may be written. `complete_prior_io`
@@ -121,8 +125,15 @@ impl<S: Stream> TlsProvider for RustlsProvider<S> {
 
 impl<S: Stream> Read for RustlsProvider<S> {
     fn read(&mut self, buf: &mut [u8]) -> std::io::Result<usize> {
-        self.drive()?;
-        self.conn.reader().read(buf)
+        loop {
+            self.drive()?;
+            match self.conn.reader().read(buf) {
+                Err(e) if e.kind() == std::io::ErrorKind::WouldBlock => {
+                    self.conn.complete_io(&mut self.io).map_err(recover)?;
+                }
+                outcome => return outcome,
+            }
+        }
     }
 }
 
@@ -136,6 +147,20 @@ impl<S: Stream> Write for RustlsProvider<S> {
         self.drive()?;
         self.conn.writer().flush()
     }
+}
+
+/// Recover the backend's classification from a transport error.
+///
+/// rustls wraps protocol errors in an `InvalidData` I/O error carrying itself
+/// as the source, so the classification `map_error` computes is recoverable
+/// without string matching; anything else keeps the transport mapping.
+fn recover(e: std::io::Error) -> TlsError {
+    if e.kind() == std::io::ErrorKind::InvalidData {
+        if let Some(inner) = e.get_ref().and_then(|s| s.downcast_ref::<rustls::Error>()) {
+            return map_error(inner);
+        }
+    }
+    TlsError::from(e)
 }
 
 /// Map a rustls error onto the backend-neutral set.
@@ -166,8 +191,9 @@ fn map_error(e: &rustls::Error) -> TlsError {
         | E::NoCertificatesPresented
         | E::UnsupportedNameType => TlsError::BadCertificate,
 
-        // The peer finished, but with nothing this build will speak.
+        // Nothing mutually negotiable, as suites or as ALPN, bare or alerted.
         E::NoApplicationProtocol
+        | E::AlertReceived(rustls::AlertDescription::NoApplicationProtocol)
         | E::PeerIncompatible(_)
         | E::PeerMisbehaved(_)
         | E::BadMaxFragmentSize => TlsError::NoSharedCipher,
@@ -199,5 +225,140 @@ fn map_error(e: &rustls::Error) -> TlsError {
 
         // Mandatory: `rustls::Error` is `#[non_exhaustive]`.
         _ => TlsError::Other(format!("rustls: unmapped error {e:?}")),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::net::{TcpListener, TcpStream};
+    use std::thread;
+
+    /// Self-signed P-256 leaf for `tls.test`, valid to 2066; generated once
+    /// with openssl and embedded so the test needs no network, no CA and no clock.
+    const ANCHOR: &[u8] = &[
+        0x30, 0x82, 0x01, 0x6c, 0x30, 0x82, 0x01, 0x11, 0xa0, 0x03, 0x02, 0x01, 0x02, 0x02, 0x14,
+        0x6d, 0x8e, 0xc2, 0xf5, 0x42, 0x91, 0xda, 0xdb, 0x05, 0xc9, 0xb2, 0x00, 0x71, 0x8b, 0xfb,
+        0x6a, 0x20, 0xf4, 0xa1, 0xf8, 0x30, 0x0a, 0x06, 0x08, 0x2a, 0x86, 0x48, 0xce, 0x3d, 0x04,
+        0x03, 0x02, 0x30, 0x13, 0x31, 0x11, 0x30, 0x0f, 0x06, 0x03, 0x55, 0x04, 0x03, 0x0c, 0x08,
+        0x74, 0x6c, 0x73, 0x2e, 0x74, 0x65, 0x73, 0x74, 0x30, 0x20, 0x17, 0x0d, 0x32, 0x36, 0x31,
+        0x30, 0x30, 0x33, 0x31, 0x32, 0x34, 0x38, 0x30, 0x32, 0x5a, 0x18, 0x0f, 0x32, 0x30, 0x36,
+        0x36, 0x30, 0x39, 0x32, 0x33, 0x31, 0x32, 0x34, 0x38, 0x30, 0x32, 0x5a, 0x30, 0x13, 0x31,
+        0x11, 0x30, 0x0f, 0x06, 0x03, 0x55, 0x04, 0x03, 0x0c, 0x08, 0x74, 0x6c, 0x73, 0x2e, 0x74,
+        0x65, 0x73, 0x74, 0x30, 0x59, 0x30, 0x13, 0x06, 0x07, 0x2a, 0x86, 0x48, 0xce, 0x3d, 0x02,
+        0x01, 0x06, 0x08, 0x2a, 0x86, 0x48, 0xce, 0x3d, 0x03, 0x01, 0x07, 0x03, 0x42, 0x00, 0x04,
+        0xe7, 0xc8, 0xba, 0x65, 0x0f, 0xe6, 0x76, 0xe9, 0x05, 0x43, 0xd0, 0x8a, 0x63, 0xd4, 0xc4,
+        0xee, 0x19, 0x31, 0xbb, 0x2d, 0x39, 0xce, 0xd1, 0xb1, 0x9a, 0xc7, 0x5a, 0xf1, 0x34, 0x98,
+        0x5e, 0xe4, 0x87, 0x83, 0xfe, 0x38, 0x68, 0x71, 0xbc, 0xef, 0xfa, 0x47, 0x67, 0x10, 0x69,
+        0x58, 0x0b, 0x2c, 0xc5, 0xa5, 0xc8, 0xcf, 0xba, 0x0a, 0x7a, 0x8e, 0x14, 0x7d, 0x97, 0x3e,
+        0xef, 0x18, 0x38, 0x94, 0xa3, 0x41, 0x30, 0x3f, 0x30, 0x1e, 0x06, 0x03, 0x55, 0x1d, 0x11,
+        0x04, 0x17, 0x30, 0x15, 0x82, 0x08, 0x74, 0x6c, 0x73, 0x2e, 0x74, 0x65, 0x73, 0x74, 0x82,
+        0x09, 0x6c, 0x6f, 0x63, 0x61, 0x6c, 0x68, 0x6f, 0x73, 0x74, 0x30, 0x1d, 0x06, 0x03, 0x55,
+        0x1d, 0x0e, 0x04, 0x16, 0x04, 0x14, 0x04, 0x37, 0x6a, 0x70, 0x40, 0x98, 0x48, 0xaf, 0x75,
+        0xc5, 0xa8, 0x24, 0x77, 0xca, 0xe1, 0x2c, 0x0d, 0xf1, 0xee, 0x5a, 0x30, 0x0a, 0x06, 0x08,
+        0x2a, 0x86, 0x48, 0xce, 0x3d, 0x04, 0x03, 0x02, 0x03, 0x49, 0x00, 0x30, 0x46, 0x02, 0x21,
+        0x00, 0xae, 0x33, 0xd8, 0x61, 0xdc, 0x06, 0xf9, 0x8b, 0x76, 0x18, 0xe9, 0xe7, 0x5d, 0xe2,
+        0x57, 0x8e, 0x84, 0x33, 0x43, 0x0a, 0x43, 0x7b, 0x7b, 0xb9, 0x05, 0xa3, 0xd8, 0x27, 0xfd,
+        0xa4, 0x51, 0x2e, 0x02, 0x21, 0x00, 0xda, 0x81, 0x2e, 0x43, 0x7c, 0xf6, 0xe8, 0x0a, 0x09,
+        0x47, 0xb4, 0x81, 0x81, 0xa2, 0x38, 0x17, 0x55, 0x0f, 0xeb, 0x95, 0x8b, 0x66, 0x78, 0x21,
+        0x05, 0x95, 0xb1, 0xf2, 0xe1, 0x67, 0x0d, 0x3e,
+    ];
+
+    /// Its PKCS#8 private key.
+    const ANCHOR_KEY: &[u8] = &[
+        0x30, 0x81, 0x87, 0x02, 0x01, 0x00, 0x30, 0x13, 0x06, 0x07, 0x2a, 0x86, 0x48, 0xce, 0x3d,
+        0x02, 0x01, 0x06, 0x08, 0x2a, 0x86, 0x48, 0xce, 0x3d, 0x03, 0x01, 0x07, 0x04, 0x6d, 0x30,
+        0x6b, 0x02, 0x01, 0x01, 0x04, 0x20, 0x32, 0x0d, 0x8c, 0x13, 0x2e, 0x2a, 0x61, 0x40, 0xf4,
+        0x9c, 0x2b, 0xa1, 0x5a, 0x13, 0x8c, 0x28, 0xef, 0xcc, 0x66, 0x47, 0xde, 0xdd, 0x5a, 0x6d,
+        0x60, 0x5e, 0x01, 0x73, 0xda, 0x6a, 0x21, 0x0a, 0xa1, 0x44, 0x03, 0x42, 0x00, 0x04, 0xe7,
+        0xc8, 0xba, 0x65, 0x0f, 0xe6, 0x76, 0xe9, 0x05, 0x43, 0xd0, 0x8a, 0x63, 0xd4, 0xc4, 0xee,
+        0x19, 0x31, 0xbb, 0x2d, 0x39, 0xce, 0xd1, 0xb1, 0x9a, 0xc7, 0x5a, 0xf1, 0x34, 0x98, 0x5e,
+        0xe4, 0x87, 0x83, 0xfe, 0x38, 0x68, 0x71, 0xbc, 0xef, 0xfa, 0x47, 0x67, 0x10, 0x69, 0x58,
+        0x0b, 0x2c, 0xc5, 0xa5, 0xc8, 0xcf, 0xba, 0x0a, 0x7a, 0x8e, 0x14, 0x7d, 0x97, 0x3e, 0xef,
+        0x18, 0x38, 0x94,
+    ];
+
+    /// Client config trusting only the anchor, offering the test ALPN.
+    fn client(name: &str, alpn: &[&[u8]]) -> TlsConfig {
+        TlsConfig {
+            server_name: name.to_owned(),
+            alpn: alpn.iter().map(|p| p.to_vec()).collect(),
+            roots: vec![ANCHOR.to_vec()],
+        }
+    }
+
+    /// Loopback server speaking the anchor cert and requiring one ALPN.
+    fn serve(listener: &TcpListener) {
+        let cert = rustls::pki_types::CertificateDer::from(ANCHOR.to_vec());
+        let key = rustls::pki_types::PrivateKeyDer::Pkcs8(
+            rustls::pki_types::PrivatePkcs8KeyDer::from(ANCHOR_KEY.to_vec()),
+        );
+        let mut config = rustls::ServerConfig::builder_with_provider(Arc::new(
+            rustls::crypto::ring::default_provider(),
+        ))
+        .with_safe_default_protocol_versions()
+        .expect("server versions")
+        .with_no_client_auth()
+        .with_single_cert(vec![cert], key)
+        .expect("server cert");
+        config.alpn_protocols = vec![b"test-only".to_vec()];
+        let (mut stream, _) = listener.accept().expect("accepts");
+        let mut conn = rustls::ServerConnection::new(Arc::new(config)).expect("server session");
+        let mut tls = rustls::Stream::new(&mut conn, &mut stream);
+        let mut buf = [0u8; 4];
+        if tls.read_exact(&mut buf).is_err() {
+            return;
+        }
+        let _ = tls.write_all(&buf);
+    }
+
+    /// Run one handshake case against a bound loopback server.
+    fn case(dial: impl FnOnce(TcpStream)) {
+        let listener = TcpListener::bind("127.0.0.1:0").expect("binds");
+        let port = listener.local_addr().expect("addr").port();
+        thread::scope(|scope| {
+            scope.spawn(|| serve(&listener));
+            let stream = TcpStream::connect(("127.0.0.1", port)).expect("connects");
+            dial(stream);
+        });
+    }
+
+    #[test]
+    fn handshake_connects_and_echoes() {
+        case(|stream| {
+            let mut client = crate::tls::connect(&client("tls.test", &[b"test-only"]), stream)
+                .expect("configures");
+            client.handshake().expect("handshakes");
+            assert_eq!(client.alpn(), Some(b"test-only".as_slice()));
+            assert!(client.suites().len() > 1);
+            client.write_all(b"ping").expect("writes");
+            client.flush().expect("flushes");
+            let mut buf = [0u8; 4];
+            client.read_exact(&mut buf).expect("reads");
+            assert_eq!(&buf, b"ping");
+        });
+    }
+
+    #[test]
+    fn mismatched_certificate_name_fails() {
+        case(|stream| {
+            let mut client = crate::tls::connect(&client("wrong.test", &[b"test-only"]), stream)
+                .expect("configures");
+            let err = client.handshake().expect_err("wrong name must fail");
+            assert!(matches!(err, TlsError::BadCertificate));
+        });
+    }
+
+    #[test]
+    fn refused_alpn_fails() {
+        case(|stream| {
+            let mut client =
+                crate::tls::connect(&client("tls.test", &[b"nope"]), stream).expect("configures");
+            let err = client.handshake().expect_err("refused ALPN must fail");
+            assert!(
+                matches!(err, TlsError::NoSharedCipher),
+                "refused ALPN mapped to {err:?}"
+            );
+        });
     }
 }
