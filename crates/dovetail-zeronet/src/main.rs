@@ -22,6 +22,7 @@
 
 mod json;
 mod proxy;
+mod shadowsocks;
 
 use dovetail_core::transport::Support;
 use std::io::Write as _;
