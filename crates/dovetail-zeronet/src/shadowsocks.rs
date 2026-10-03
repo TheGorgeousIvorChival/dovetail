@@ -33,9 +33,8 @@ pub(crate) fn serve(mut stream: TcpStream, password: &str, method: &str, freedom
     if read_exact(&mut stream, &mut salt).is_err() {
         return;
     }
-    let mut recv = match Cipher::new(&master, &salt) {
-        Some(cipher) => cipher,
-        None => return,
+    let Some(mut recv) = Cipher::new(&master, &salt) else {
+        return;
     };
     let Some(first) = open_chunk(&mut stream, &mut recv) else {
         return;
@@ -80,7 +79,7 @@ pub(crate) fn client_handshake(
     let mut addr = Vec::with_capacity(20);
     push_addr(&mut addr, target, 4);
     addr.extend_from_slice(&target.port().to_be_bytes());
-    seal_into(&mut send, &addr, uplink).ok()?;
+    seal_all(&mut send, &addr, uplink).ok()?;
     let mut peer = [0u8; SALT_LEN];
     read_exact(uplink, &mut peer).ok()?;
     let recv = Cipher::new(&master, &peer)?;
@@ -109,10 +108,7 @@ pub(crate) fn pump_relay(plain: &TcpStream, sealed: &TcpStream, send: Cipher, re
     let mut recv = recv;
     let done = thread::spawn(move || {
         let mut buf = vec![0u8; READ_CHUNK];
-        loop {
-            let Ok(read) = plain_read.read(&mut buf) else {
-                break;
-            };
+        while let Ok(read) = plain_read.read(&mut buf) {
             if read == 0 {
                 break;
             }
@@ -123,10 +119,7 @@ pub(crate) fn pump_relay(plain: &TcpStream, sealed: &TcpStream, send: Cipher, re
         let _ = plain_read.shutdown(Shutdown::Both);
         let _ = sealed_write.shutdown(Shutdown::Both);
     });
-    loop {
-        let Some(chunk) = open_chunk(&mut sealed_read, &mut recv) else {
-            break;
-        };
+    while let Some(chunk) = open_chunk(&mut sealed_read, &mut recv) {
         if plain_write.write_all(&chunk).is_err() {
             break;
         }
