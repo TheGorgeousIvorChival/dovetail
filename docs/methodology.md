@@ -9,7 +9,8 @@ graph LR
     I["gate 1 · identity<br/>every length, every offset<br/>panics on the first wrong byte"]
     D["gate 2 · deterministic<br/>blocks, allocations, zero-fills<br/>integers: identical everywhere"]
     T["gate 3 · timing<br/>the only machine-dependent gate<br/>re-measured before it can fail"]
-    I --> D --> T
+    F["gate 4 · framing<br/>the bytes gate 1 cannot reach<br/>asserted equal, then timed"]
+    I --> D --> T --> F
 ```
 
 1. **Identity runs first.** Every length and every block offset is compared byte for byte against the pinned reference. A wrong core never gets to be a fast one, because this fails first.
