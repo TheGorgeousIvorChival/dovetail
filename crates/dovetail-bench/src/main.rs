@@ -257,6 +257,40 @@ fn gate_deterministic(key: &[u8; 32], nonce: &[u8; 12]) -> usize {
         }
     }
 
+    // Rung 1's record framing is gated the same way: seal/open run per record,
+    // so one allocation there is one per record on a live stream. Sessions and
+    // buffers live outside the window; only the framing is inside it.
+    {
+        let uuid = [0xabu8; 16];
+        for &len in [0usize, 1, 64, 1400, 8171] {
+            let content = vec![0u8; len];
+            let mut sealed = vec![0u8; 16 + 5 + len + 256];
+            let mut opened = vec![0u8; 16 + 5 + len + 256];
+            let iters = 64u64;
+            let ((), counts) = count::measure(|| {
+                let mut session = dovetail_core::vless::VisionSeal::new(key, nonce, &uuid);
+                let mut stream = dovetail_core::vless::VisionOpen::new(&uuid);
+                for _ in 0..iters {
+                    let n = session.seal(
+                        std::hint::black_box(&mut sealed[..]),
+                        std::hint::black_box(&content[..]),
+                        dovetail_core::vless::VisionCommand::Continue,
+                        false,
+                    );
+                    let (written, _) =
+                        stream.open(&sealed[..n], std::hint::black_box(&mut opened[..]));
+                    std::hint::black_box((n, written));
+                }
+            });
+            if counts.allocs != 0 || counts.bytes != 0 || counts.zeroed != 0 {
+                alloc_failures.push(format!(
+                    "vision {len}B: {} allocs, {} bytes, {} zero-fills per 64 seals",
+                    counts.allocs, counts.bytes, counts.zeroed
+                ));
+            }
+        }
+    }
+
     assert!(
         block_failures.is_empty(),
         "DISCARDED WORK: the ladder generated blocks the caller's length does not need at {} \
