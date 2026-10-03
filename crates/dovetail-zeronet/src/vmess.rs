@@ -221,10 +221,12 @@ fn kdf16(key: &[u8], path: &[&[u8]]) -> [u8; 16] {
 
 /// `MD5` of two slices concatenated.
 fn md5_two(first: &[u8], second: &[u8]) -> [u8; 16] {
-    let mut input = Vec::with_capacity(first.len() + second.len());
-    input.extend_from_slice(first);
-    input.extend_from_slice(second);
-    md5::compute(input).0
+    let mut input = [0u8; 52];
+    let head = first.len().min(input.len());
+    let tail = second.len().min(input.len() - head);
+    input[..head].copy_from_slice(&first[..head]);
+    input[head..head + tail].copy_from_slice(&second[..tail]);
+    md5::compute(&input[..head + tail]).0
 }
 
 /// Instruction key: `MD5` of the uuid bytes plus the fixed magic.
@@ -310,19 +312,45 @@ fn now_secs() -> u64 {
         .map_or(0, |d| d.as_secs())
 }
 
-/// One `AES-ECB` block either way.
-fn aes_block(key: &[u8; 16], block: &mut [u8; 16], encrypt: bool) -> bool {
-    use aes::cipher::{BlockDecrypt, BlockEncrypt, KeyInit as _};
-    let Ok(cipher) = aes::Aes128::new_from_slice(key) else {
-        return false;
-    };
-    let cell = aes::cipher::generic_array::GenericArray::from_mut_slice(block.as_mut_slice());
-    if encrypt {
-        cipher.encrypt_block(cell);
-    } else {
-        cipher.decrypt_block(cell);
+/// The auth id's `AES-128-ECB` key schedule, built once and kept.
+///
+/// `aes::Aes128::new_from_slice` expands the key: ten rounds of S-box lookups and
+/// a round-key copy per block it can ever touch. Deriving it where the auth id was
+/// sealed meant expanding the key per auth id, and deriving the key bytes at all
+/// meant an `HMAC-SHA256` schedule per auth id — for a key that depends on the user
+/// and nothing else. An auth id is made once per connection on the client and
+/// checked once per connection on the server, so that was a key expansion and a
+/// full `KDF` chain on both sides of every dial.
+#[derive(Clone)]
+struct AuthKey(aes::Aes128);
+
+impl std::fmt::Debug for AuthKey {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("AuthKey").finish_non_exhaustive()
     }
-    true
+}
+
+impl AuthKey {
+    /// The key an auth id is sealed under: `KDF16` of the instruction key.
+    fn new(instruction: &[u8; 16]) -> Self {
+        use aes::cipher::KeyInit as _;
+        let bytes = kdf16(instruction, &[b"AES Auth ID Encryption"]);
+        Self(aes::Aes128::new_from_slice(&bytes).expect("sixteen bytes is a key"))
+    }
+
+    /// Seal one block in place.
+    fn seal(&self, block: &mut [u8; 16]) {
+        use aes::cipher::BlockEncrypt as _;
+        let cell = aes::cipher::generic_array::GenericArray::from_mut_slice(block.as_mut_slice());
+        self.0.encrypt_block(cell);
+    }
+
+    /// Open one block in place.
+    fn open(&self, block: &mut [u8; 16]) {
+        use aes::cipher::BlockDecrypt as _;
+        let cell = aes::cipher::generic_array::GenericArray::from_mut_slice(block.as_mut_slice());
+        self.0.decrypt_block(cell);
+    }
 }
 
 /// Seal a header block under `AES-128-GCM`.
@@ -381,7 +409,7 @@ fn response_prefix(response_key: &[u8; 16], response_iv: &[u8; 16], auth: u8) ->
 }
 
 /// Fresh auth id for one request.
-fn make_auth_id(instruction: &[u8; 16]) -> Option<[u8; 16]> {
+fn make_auth_id(key: &AuthKey) -> Option<[u8; 16]> {
     let mut plain = [0u8; 16];
     plain[..8].copy_from_slice(&now_secs().to_be_bytes());
     if !random_into(&mut plain[8..12]) {
@@ -389,20 +417,14 @@ fn make_auth_id(instruction: &[u8; 16]) -> Option<[u8; 16]> {
     }
     let checksum = crc32(&plain[..12]).to_be_bytes();
     plain[12..].copy_from_slice(&checksum);
-    let key = kdf16(instruction, &[b"AES Auth ID Encryption"]);
-    if !aes_block(&key, &mut plain, true) {
-        return None;
-    }
+    key.seal(&mut plain);
     Some(plain)
 }
 
 /// Whether an auth id decrypts, checksums and sits inside the time window.
-fn valid_auth_id(instruction: &[u8; 16], auth_id: &[u8; 16]) -> bool {
-    let key = kdf16(instruction, &[b"AES Auth ID Encryption"]);
+fn valid_auth_id(key: &AuthKey, auth_id: &[u8; 16]) -> bool {
     let mut plain = *auth_id;
-    if !aes_block(&key, &mut plain, false) {
-        return false;
-    }
+    key.open(&mut plain);
     if crc32(&plain[..12]) != u32::from_be_bytes(plain[12..].try_into().unwrap()) {
         return false;
     }
@@ -663,7 +685,7 @@ type RequestParts = (Vec<u8>, [u8; 16], [u8; 16], u8);
 /// Build a client request and its session keys.
 fn request_bytes(uuid: &[u8; 16], cipher: Cipher, target: &SocketAddr) -> Option<RequestParts> {
     let instruction = instruction_key(uuid);
-    let auth_id = make_auth_id(&instruction)?;
+    let auth_id = make_auth_id(&AuthKey::new(&instruction))?;
     // One entropy call for every fixed field: six calls here used to mean six
     // syscalls per dial, all for bytes one call already returns uniformly.
     let mut rand = [0u8; 16 + 16 + 1 + 8 + 1];
@@ -987,7 +1009,7 @@ fn accept_request(
     let mut auth_id = [0u8; AUTH_LEN];
     read_exact(stream, &mut auth_id).ok()?;
     let instruction = instruction_key(id);
-    if !valid_auth_id(&instruction, &auth_id) || replay_seen(&auth_id) {
+    if !valid_auth_id(&AuthKey::new(&instruction), &auth_id) || replay_seen(&auth_id) {
         return None;
     }
     let header = read_open_header(stream, &instruction, &auth_id)?;
@@ -1247,11 +1269,12 @@ mod tests {
     #[test]
     fn auth_ids_round_trip_and_reject_damage() {
         let instruction = instruction_key(&[0x22u8; 16]);
-        let id = make_auth_id(&instruction).expect("makes");
-        assert!(valid_auth_id(&instruction, &id));
+        let key = AuthKey::new(&instruction);
+        let id = make_auth_id(&key).expect("makes");
+        assert!(valid_auth_id(&key, &id));
         let mut bad = id;
         bad[0] ^= 1;
-        assert!(!valid_auth_id(&instruction, &bad));
+        assert!(!valid_auth_id(&key, &bad));
     }
 
     #[test]
@@ -1847,20 +1870,20 @@ mod tests {
     #[test]
     fn expired_auth_ids_are_refused() {
         let instruction = instruction_key(&[0x22u8; 16]);
-        let key = kdf16(&instruction, &[b"AES Auth ID Encryption"]);
+        let key = AuthKey::new(&instruction);
         let seal = |ago: u64| {
             let mut plain = [0u8; 16];
             plain[..8].copy_from_slice(&now_secs().saturating_sub(ago).to_be_bytes());
             plain[8..12].copy_from_slice(&[9u8, 8, 7, 6]);
             let checksum = crc32(&plain[..12]).to_be_bytes();
             plain[12..].copy_from_slice(&checksum);
-            assert!(aes_block(&key, &mut plain, true));
+            key.seal(&mut plain);
             plain
         };
-        assert!(valid_auth_id(&instruction, &seal(0)));
-        assert!(valid_auth_id(&instruction, &seal(119)));
-        assert!(!valid_auth_id(&instruction, &seal(121)));
-        assert!(!valid_auth_id(&instruction, &seal(3600)));
+        assert!(valid_auth_id(&key, &seal(0)));
+        assert!(valid_auth_id(&key, &seal(119)));
+        assert!(!valid_auth_id(&key, &seal(121)));
+        assert!(!valid_auth_id(&key, &seal(3600)));
     }
 
     #[test]

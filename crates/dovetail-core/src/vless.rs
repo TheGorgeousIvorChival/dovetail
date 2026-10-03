@@ -203,25 +203,23 @@ impl VlessLink {
     /// Length of [`Self::encode_request_header`] for a target, without encoding.
     #[must_use]
     pub fn request_header_len(&self, target_host: &str) -> usize {
-        // 1 version + 16 uuid + addons + 1 cmd + 2 port + atyp/address, no trailer.
-        let addons = if self.flow() == "xtls-rprx-vision" {
+        // 1 version + 16 uuid + addons + 1 cmd + 2 port + atyp + address.
+        1 + 16 + self.addons_len() + 1 + 2 + 1 + Addr::of(target_host).len()
+    }
+
+    /// Whether this link's flow is Vision, which decides the addons and nothing else.
+    fn is_vision(&self) -> bool {
+        self.flow() == "xtls-rprx-vision"
+    }
+
+    /// Addons bytes this link's flow contributes: a length byte plus the blob, or
+    /// one zero byte for an empty addons field.
+    fn addons_len(&self) -> usize {
+        if self.is_vision() {
             1 + VISION_ADDONS.len()
         } else {
             1
-        };
-        // An IPv4 literal never contains ':' and an IPv6 literal always does, so
-        // only one parse is ever attempted. Same result as trying both, one failed
-        // parse fewer: names pay one parse instead of two, IPv6 pays one, IPv4 pays
-        // one as before.
-        let has_colon = target_host.contains(':');
-        let addr = if !has_colon && target_host.parse::<std::net::Ipv4Addr>().is_ok() {
-            1 + 4
-        } else if has_colon && target_host.parse::<std::net::Ipv6Addr>().is_ok() {
-            1 + 16
-        } else {
-            1 + 1 + target_host.len().min(255)
-        };
-        1 + 16 + addons + 1 + 2 + addr
+        }
     }
 
     /// Encode into the caller's buffer: zero allocations, zero copies beyond
@@ -232,14 +230,19 @@ impl VlessLink {
     /// If `out` is shorter than [`Self::request_header_len`], rather than
     /// truncating a handshake.
     pub fn encode_into(&self, target_host: &str, target_port: u16, out: &mut [u8]) -> usize {
-        let need = self.request_header_len(target_host);
+        // One classification and one `flow` lookup, each feeding both the length
+        // and the bytes. Asking `request_header_len` and then parsing again — which
+        // is what this did — parsed the address twice and walked the query map
+        // twice to recompute a number the encode already knew.
+        let addr = Addr::of(target_host);
+        let vision = self.is_vision();
+        let need = 1 + 16 + self.addons_len() + 1 + 2 + 1 + addr.len();
         assert!(out.len() >= need, "vless header buffer too short");
-        let mut o = 0;
-        out[o] = 0;
-        o += 1;
-        out[o..o + 16].copy_from_slice(&uuid_bytes(&self.uuid));
-        o += 16;
-        let vision = self.flow() == "xtls-rprx-vision";
+
+        let id = uuid_bytes(&self.uuid);
+        out[0] = 0;
+        out[1..17].copy_from_slice(&id);
+        let mut o = 17;
         if vision {
             out[o] = VISION_ADDONS.len() as u8;
             o += 1;
@@ -249,43 +252,11 @@ impl VlessLink {
             out[o] = 0;
             o += 1;
         }
-        out[o] = 1;
-        o += 1;
-        out[o..o + 2].copy_from_slice(&target_port.to_be_bytes());
-        o += 2;
-        // Same ':' rule as `request_header_len`: at most one parse runs, and the
-        // skipped one could never have succeeded. Same bytes on every input,
-        // including a mistaken `host:port` (falls through to domain, as before).
-        let has_colon = target_host.contains(':');
-        let v4 = if has_colon {
-            None
-        } else {
-            target_host.parse::<std::net::Ipv4Addr>().ok()
-        };
-        let v6 = if has_colon {
-            target_host.parse::<std::net::Ipv6Addr>().ok()
-        } else {
-            None
-        };
-        if let Some(ipv4) = v4 {
-            out[o] = 1;
-            o += 1;
-            out[o..o + 4].copy_from_slice(&ipv4.octets());
-            o += 4;
-        } else if let Some(ipv6) = v6 {
-            out[o] = 3;
-            o += 1;
-            out[o..o + 16].copy_from_slice(&ipv6.octets());
-            o += 16;
-        } else {
-            out[o] = 2;
-            o += 1;
-            let n = target_host.len().min(255);
-            out[o] = n as u8;
-            o += 1;
-            out[o..o + n].copy_from_slice(&target_host.as_bytes()[..n]);
-            o += n;
-        }
+        // Command and port as one three-byte store: two byte stores and a
+        // big-endian pair are the same bytes.
+        out[o..o + 3].copy_from_slice(&[1, (target_port >> 8) as u8, target_port as u8]);
+        o += 3;
+        o += addr.encode_into(&mut out[o..]);
         debug_assert_eq!(o, need);
         o
     }
@@ -559,6 +530,71 @@ impl VisionOpen {
     }
 }
 
+/// How a target host encodes as an address, classified once per header.
+///
+/// `request_header_len` and `encode_into` each decided this independently, which
+/// parsed every target twice per connection and let the two answers drift by a
+/// byte if they ever did.
+enum Addr<'a> {
+    /// Four octets, atyp 1.
+    V4([u8; 4]),
+    /// Sixteen octets, atyp 3.
+    V6([u8; 16]),
+    /// Domain bytes already cut to the length byte's 255, atyp 2.
+    Name(&'a [u8]),
+}
+
+impl<'a> Addr<'a> {
+    /// Classify `host` the way the wire format does, parsing at most once.
+    ///
+    /// An IPv4 literal never contains `:` and an IPv6 literal always does, so only
+    /// one parse is ever attempted: names pay one failed parse, IPv4 and IPv6 pay
+    /// one successful one, and a mistaken `host:port` falls through to a name.
+    fn of(host: &'a str) -> Self {
+        if host.contains(':') {
+            if let Ok(ip) = host.parse::<std::net::Ipv6Addr>() {
+                return Self::V6(ip.octets());
+            }
+        } else if let Ok(ip) = host.parse::<std::net::Ipv4Addr>() {
+            return Self::V4(ip.octets());
+        }
+        Self::Name(&host.as_bytes()[..host.len().min(255)])
+    }
+
+    /// Address field bytes on the wire, not counting the atyp byte: a domain
+    /// carries a length byte in front of its bytes, so it is one longer than it
+    /// looks and a name never costs the four an `Ipv4Addr` would.
+    fn len(&self) -> usize {
+        match self {
+            Self::V4(_) => 4,
+            Self::V6(_) => 16,
+            Self::Name(bytes) => 1 + bytes.len(),
+        }
+    }
+
+    /// Write the atyp byte and the address into `out`, returning bytes written.
+    fn encode_into(&self, out: &mut [u8]) -> usize {
+        match self {
+            Self::V4(octets) => {
+                out[0] = 1;
+                out[1..5].copy_from_slice(octets);
+                5
+            }
+            Self::V6(octets) => {
+                out[0] = 3;
+                out[1..17].copy_from_slice(octets);
+                17
+            }
+            Self::Name(bytes) => {
+                out[0] = 2;
+                out[1] = bytes.len() as u8;
+                out[2..2 + bytes.len()].copy_from_slice(bytes);
+                2 + bytes.len()
+            }
+        }
+    }
+}
+
 fn planned_reason(link: &VlessLink) -> &'static str {
     match link.transport_kind() {
         TransportKind::Tcp => match link.security() {
@@ -593,24 +629,63 @@ fn validate_uuid(uuid: &str) -> Result<(), VlessError> {
     Ok(())
 }
 
+/// Hex digit value per byte, or 0xFF for anything that is not a hex digit.
+const fn hex_table() -> [u8; 256] {
+    let mut t = [0xFFu8; 256];
+    let mut c = 0usize;
+    while c < 256 {
+        t[c] = match c as u8 {
+            b'0'..=b'9' => c as u8 - b'0',
+            b'a'..=b'f' => c as u8 - b'a' + 10,
+            b'A'..=b'F' => c as u8 - b'A' + 10,
+            _ => 0xFF,
+        };
+        c += 1;
+    }
+    t
+}
+const HEX: [u8; 256] = hex_table();
+
+/// Character positions of each output byte's high hex digit in a canonical
+/// `8-4-4-4-12` UUID: dashes sit at 8, 13, 18 and 23, so every completed group
+/// shifts the next one along by one.
+const UUID_HI: [usize; 16] = [0, 2, 4, 6, 9, 11, 14, 16, 19, 21, 24, 26, 28, 30, 32, 34];
+
+/// Character positions of each output byte's low hex digit, the high ones plus one.
+const UUID_LOW: [usize; 16] = [1, 3, 5, 7, 10, 12, 15, 17, 20, 22, 25, 27, 29, 31, 33, 35];
+
+/// The sixteen bytes of a validated UUID, without allocating.
+///
+/// The canonical form is 36 bytes with dashes at 8, 13, 18 and 23, and that gate
+/// makes the fixed positions above read exactly the bytes a scan for hex digits
+/// would have stopped on — so this is the same sixteen values from sixteen table
+/// lookups instead of thirty-six iterations of a branchy pairing state machine,
+/// which is what this ran per dial. Anything else, a link built by hand say, keeps
+/// the scan, and the scan is what defines the result either way.
 fn uuid_bytes(uuid: &str) -> [u8; 16] {
-    // No allocation: the validated UUID is 32 hex digits and 4 dashes, and each
-    // pair of hex digits is one byte. A byte with either nibble non-hex encodes
-    // as 0, exactly like the previous `from_str_radix(..).unwrap_or(0)` per pair —
-    // but `parse` rejects non-hex before this is reached, so the fallback never
-    // fires on a constructed link. This runs per header encode, so the `String`
-    // it replaces was one heap allocation on the hot path.
+    let b = uuid.as_bytes();
     let mut out = [0u8; 16];
+    if b.len() == 36 && b[8] == b'-' && b[13] == b'-' && b[18] == b'-' && b[23] == b'-' {
+        for (slot, (&hi, &lo)) in out.iter_mut().zip(UUID_HI.iter().zip(UUID_LOW.iter())) {
+            let h = HEX[b[hi] as usize];
+            let l = HEX[b[lo] as usize];
+            *slot = if h < 16 && l < 16 { (h << 4) | l } else { 0 };
+        }
+        return out;
+    }
+    // A byte with either nibble non-hex encodes as 0, exactly like the previous
+    // `from_str_radix(..).unwrap_or(0)` per pair. `parse` rejects non-hex before
+    // this is reached, so the fallback never fires on a parsed link.
     let mut idx = 0usize;
     let mut hi: Option<(u8, bool)> = None;
-    for &b in uuid.as_bytes() {
-        if b == b'-' {
+    for &c in b {
+        if c == b'-' {
             continue;
         }
-        let (v, ok) = match b {
-            b'0'..=b'9' => (b - b'0', true),
-            b'a'..=b'f' => (b - b'a' + 10, true),
-            b'A'..=b'F' => (b - b'A' + 10, true),
+        let (v, ok) = match c {
+            b'0'..=b'9' => (c - b'0', true),
+            b'a'..=b'f' => (c - b'a' + 10, true),
+            b'A'..=b'F' => (c - b'A' + 10, true),
             _ => (0, false),
         };
         if let Some((h, hok)) = hi.take() {
@@ -853,6 +928,71 @@ mod tests {
         )
         .expect("parses");
         assert!(matches!(l.support(), Support::UnsafeRequiresOptIn { .. }));
+    }
+
+    /// The fast path and the scan must be one function, not two answers.
+    ///
+    /// `uuid_bytes` reads a canonical 36-byte UUID through fixed positions and
+    /// everything else through the scan that defines it. This is what holds them
+    /// together: the scan is run on the same input and the two must agree, over
+    /// every hex digit, over a UUID with a non-hex digit, and over the shapes a
+    /// hand-built link can hold that are not canonical at all.
+    #[test]
+    fn the_uuid_fast_path_agrees_with_the_scan() {
+        fn scan(uuid: &str) -> [u8; 16] {
+            let mut out = [0u8; 16];
+            let mut idx = 0usize;
+            let mut hi: Option<(u8, bool)> = None;
+            for c in uuid.bytes() {
+                if c == b'-' {
+                    continue;
+                }
+                let (v, ok) = match c {
+                    b'0'..=b'9' => (c - b'0', true),
+                    b'a'..=b'f' => (c - b'a' + 10, true),
+                    b'A'..=b'F' => (c - b'A' + 10, true),
+                    _ => (0, false),
+                };
+                if let Some((h, hok)) = hi.take() {
+                    if idx < 16 {
+                        out[idx] = if hok && ok { (h << 4) | v } else { 0 };
+                        idx += 1;
+                    }
+                } else {
+                    hi = Some((v, ok));
+                }
+                if idx >= 16 {
+                    break;
+                }
+            }
+            out
+        }
+        let canonical = "aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee";
+        assert_eq!(uuid_bytes(canonical), scan(canonical), "the fast path");
+        // Every digit, at every position, in both cases.
+        for pos in 0..canonical.len() {
+            if canonical.as_bytes()[pos] == b'-' {
+                continue;
+            }
+            for digit in b"0123456789abcdefABCDEF".iter().copied() {
+                let mut bytes = canonical.as_bytes().to_vec();
+                bytes[pos] = digit;
+                let text = std::str::from_utf8(&bytes).expect("ascii");
+                assert_eq!(uuid_bytes(text), scan(text), "pos {pos} digit {digit}");
+            }
+        }
+        // A 36-byte string whose dashes are somewhere else: the gate must fall
+        // through to the scan, and the two must still agree.
+        for (a, b) in [(0usize, 1usize), (5, 6), (20, 21), (34, 35)] {
+            let mut bytes = canonical.as_bytes().to_vec();
+            bytes.swap(a, b);
+            let text = std::str::from_utf8(&bytes).expect("ascii");
+            assert_eq!(uuid_bytes(text), scan(text), "bytes {a} and {b} swapped");
+        }
+        // Not 36 bytes at all: no fast path, and still the scan's answer.
+        for short in ["", "a", "aaaaaaaa-bbbb", &canonical[..35], &canonical[1..]] {
+            assert_eq!(uuid_bytes(short), scan(short), "{short:?}");
+        }
     }
 
     #[test]
