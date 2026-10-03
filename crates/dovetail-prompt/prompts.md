@@ -390,7 +390,7 @@ Report the match count before and after on this tree. A gate that cannot disting
 ## P14 · WebSocket transport for VLESS
 
 **When to use:** When the `vless_over_websocket` oracle failure is the next one to clear: the handshake is closed after the first byte.
-**Status:** todo
+**Status:** done
 **Leverage:** 4
 **Effort:** medium
 **Gates:** `cargo test --workspace`; CI: `conformance.yml` green with the websocket oracle test executed against `dovetail-zeronet`
@@ -404,7 +404,7 @@ Teach `dovetail-zeronet` the `ws` carrier for the two roles it already plays: ac
 ## P15 · HTTPUpgrade and gRPC transports for VLESS
 
 **When to use:** When the `httpupgrade` and `grpc` oracle failures are the next ones to clear: one fails the handshake, the other times out on echo.
-**Status:** todo
+**Status:** done
 **Leverage:** 3
 **Effort:** large
 **Gates:** `cargo test --workspace`; CI: `conformance.yml` green with both oracle tests executed against `dovetail-zeronet`
