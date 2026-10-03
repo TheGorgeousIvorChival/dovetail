@@ -315,12 +315,12 @@ fn now_secs() -> u64 {
 /// The auth id's `AES-128-ECB` key schedule, built once and kept.
 ///
 /// `aes::Aes128::new_from_slice` expands the key: ten rounds of S-box lookups and
-/// a round-key copy per block it can ever touch. Deriving it inside
-/// [`aes_block`] meant expanding the key per auth id, and deriving the key bytes
-/// at all meant an `HMAC-SHA256` schedule per auth id — for a key that depends on
-/// the user and nothing else. An auth id is made once per connection on the
-/// client and checked once per connection on the server, so that was a key
-/// expansion and a full `KDF` chain on both sides of every dial.
+/// a round-key copy per block it can ever touch. Deriving it where the auth id was
+/// sealed meant expanding the key per auth id, and deriving the key bytes at all
+/// meant an `HMAC-SHA256` schedule per auth id — for a key that depends on the user
+/// and nothing else. An auth id is made once per connection on the client and
+/// checked once per connection on the server, so that was a key expansion and a
+/// full `KDF` chain on both sides of every dial.
 #[derive(Clone)]
 struct AuthKey(aes::Aes128);
 
