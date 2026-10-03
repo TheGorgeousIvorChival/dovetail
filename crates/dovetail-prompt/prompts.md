@@ -217,7 +217,7 @@ Report each finding with the rung, the length band and the input that triggers i
 ## P7 · Adversarial review of the bit-identity claim
 
 **When to use:** Before any release claim, and any time a reviewer asks how the identity check could pass a wrong core — because it has, once, by stopping short of the second group.
-**Status:** done
+**Status:** todo
 **Leverage:** 5
 **Effort:** medium
 **Gates:** `cargo test --workspace --all-features`; `cargo run --release -p dovetail-bench`
