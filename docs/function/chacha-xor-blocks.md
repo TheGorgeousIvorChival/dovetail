@@ -53,7 +53,7 @@ One ChaCha20 chain is a dependent add-xor-rotate chain with nothing to overlap. 
 | backend | lanes | states in flight | blocks per iteration | registers |
 | --- | --- | --- | --- | --- |
 | portable | 4 (`[u32; 4]`) | 4 | 4 | 16 arrays |
-| NEON (aarch64) | 4 (`uint32x4_t`) | 4 | 4 | 16 `q` registers |
+| NEON (aarch64) | 4 (`uint32x4_t`) | 8 | 8 | 32 `q` registers |
 | SSE2 (x86_64) | 4 (`__m128i`) | 1 | 1 | 4 `xmm` registers |
 | AVX2 (x86_64) | 8 (`__m256i`) | 8 | 8 | 16 `ymm` registers |
 
