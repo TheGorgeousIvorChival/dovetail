@@ -219,8 +219,8 @@ fn serve_socks(mut client: TcpStream, out: &Outbound) {
             header.extend_from_slice(&trojan_key(&trojan.password));
             header.extend_from_slice(b"\r\n");
             header.push(1);
-            header.extend_from_slice(&target.port().to_be_bytes());
             push_addr(&mut header, &target, 4);
+            header.extend_from_slice(&target.port().to_be_bytes());
             header.extend_from_slice(b"\r\n");
             if uplink.write_all(&header).is_err() {
                 return;
@@ -289,11 +289,11 @@ fn decode_request(stream: &mut TcpStream) -> Option<([u8; 16], u8, SocketAddr)> 
     read_exact(stream, &mut cmd).ok()?;
     let mut port = [0u8; 2];
     read_exact(stream, &mut port).ok()?;
-    let target = read_addr(stream, u16::from_be_bytes(port), 3)?;
+    let target = read_addr(stream, u16::from_be_bytes(port))?;
     Some((id, cmd[0], target))
 }
 
-/// Decode a `trojan` request: 56 hex key bytes, `CRLF`, command, address, `CRLF`.
+/// Decode a `trojan` request: key, `CRLF`, command, `SOCKS`-order address, `CRLF`.
 fn decode_trojan_request(stream: &mut TcpStream, password: &str) -> Option<(u8, SocketAddr)> {
     let mut key = [0u8; 56];
     read_exact(stream, &mut key).ok()?;
@@ -307,9 +307,7 @@ fn decode_trojan_request(stream: &mut TcpStream, password: &str) -> Option<(u8, 
     }
     let mut cmd = [0u8; 1];
     read_exact(stream, &mut cmd).ok()?;
-    let mut port = [0u8; 2];
-    read_exact(stream, &mut port).ok()?;
-    let target = read_addr(stream, u16::from_be_bytes(port), 4)?;
+    let target = read_socks_addr(stream)?;
     read_exact(stream, &mut crlf).ok()?;
     if crlf != *b"\r\n" {
         return None;
@@ -317,9 +315,8 @@ fn decode_trojan_request(stream: &mut TcpStream, password: &str) -> Option<(u8, 
     Some((cmd[0], target))
 }
 
-/// Read one `atyp` address for a known port; `v6` names the `IPv6` tag of the framing.
-fn read_addr(stream: &mut TcpStream, port: u16, v6: u8) -> Option<SocketAddr> {
-    let domain_tag = if v6 == 3 { 2 } else { 3 };
+/// Read one `VLESS` address (`1`/`2`/`3`) for a known port.
+fn read_addr(stream: &mut TcpStream, port: u16) -> Option<SocketAddr> {
     let mut atyp = [0u8; 1];
     read_exact(stream, &mut atyp).ok()?;
     if atyp[0] == 1 {
@@ -327,12 +324,12 @@ fn read_addr(stream: &mut TcpStream, port: u16, v6: u8) -> Option<SocketAddr> {
         read_exact(stream, &mut ip).ok()?;
         return Some(SocketAddr::new(std::net::IpAddr::V4(ip.into()), port));
     }
-    if atyp[0] == v6 {
+    if atyp[0] == 3 {
         let mut ip = [0u8; 16];
         read_exact(stream, &mut ip).ok()?;
         return Some(SocketAddr::new(std::net::IpAddr::V6(ip.into()), port));
     }
-    if atyp[0] != domain_tag {
+    if atyp[0] != 2 {
         return None;
     }
     let mut len = [0u8; 1];
@@ -389,40 +386,60 @@ fn socks_handshake(client: &mut TcpStream) -> Option<SocketAddr> {
     if req[0] != 5 || req[1] != 1 {
         return None;
     }
-    let target = match req[3] {
-        1 => {
-            let mut ip = [0u8; 4];
-            read_exact(client, &mut ip).ok()?;
-            let mut port = [0u8; 2];
-            read_exact(client, &mut port).ok()?;
-            SocketAddr::new(std::net::IpAddr::V4(ip.into()), u16::from_be_bytes(port))
-        }
-        3 => {
-            let mut len = [0u8; 1];
-            read_exact(client, &mut len).ok()?;
-            let mut name = vec![0u8; usize::from(len[0])];
-            read_exact(client, &mut name).ok()?;
-            let mut port = [0u8; 2];
-            read_exact(client, &mut port).ok()?;
-            let host = String::from_utf8(name).ok()?;
-            format!("{host}:{}", u16::from_be_bytes(port))
-                .to_socket_addrs()
-                .ok()?
-                .next()?
-        }
-        4 => {
-            let mut ip = [0u8; 16];
-            read_exact(client, &mut ip).ok()?;
-            let mut port = [0u8; 2];
-            read_exact(client, &mut port).ok()?;
-            SocketAddr::new(std::net::IpAddr::V6(ip.into()), u16::from_be_bytes(port))
-        }
-        _ => return None,
+    let Some(target) = read_socks_addr_rest(client, req[3]) else {
+        return None;
     };
     if client.write_all(&[5, 0, 0, 1, 0, 0, 0, 0, 0, 0]).is_err() {
         return None;
     }
     Some(target)
+}
+
+/// Read a `SOCKS`-order address (`atyp`, address, port) from the stream.
+fn read_socks_addr(stream: &mut TcpStream) -> Option<SocketAddr> {
+    let mut atyp = [0u8; 1];
+    read_exact(stream, &mut atyp).ok()?;
+    read_socks_addr_rest(stream, atyp[0])
+}
+
+/// Read the address and port after a `SOCKS`-order `atyp` byte.
+fn read_socks_addr_rest(stream: &mut TcpStream, atyp: u8) -> Option<SocketAddr> {
+    match atyp {
+        1 => {
+            let mut ip = [0u8; 4];
+            read_exact(stream, &mut ip).ok()?;
+            let mut port = [0u8; 2];
+            read_exact(stream, &mut port).ok()?;
+            Some(SocketAddr::new(
+                std::net::IpAddr::V4(ip.into()),
+                u16::from_be_bytes(port),
+            ))
+        }
+        3 => {
+            let mut len = [0u8; 1];
+            read_exact(stream, &mut len).ok()?;
+            let mut name = vec![0u8; usize::from(len[0])];
+            read_exact(stream, &mut name).ok()?;
+            let mut port = [0u8; 2];
+            read_exact(stream, &mut port).ok()?;
+            let host = String::from_utf8(name).ok()?;
+            format!("{host}:{}", u16::from_be_bytes(port))
+                .to_socket_addrs()
+                .ok()?
+                .next()
+        }
+        4 => {
+            let mut ip = [0u8; 16];
+            read_exact(stream, &mut ip).ok()?;
+            let mut port = [0u8; 2];
+            read_exact(stream, &mut port).ok()?;
+            Some(SocketAddr::new(
+                std::net::IpAddr::V6(ip.into()),
+                u16::from_be_bytes(port),
+            ))
+        }
+        _ => None,
+    }
 }
 
 /// First inbound `vless` client's id bytes, zeros when unparseable.
@@ -665,9 +682,9 @@ mod tests {
         let mut good = TcpStream::connect(("127.0.0.1", port)).expect("connects");
         let mut header = Vec::new();
         header.extend_from_slice(&trojan_key("an-example-shared-password"));
-        header.extend_from_slice(b"\r\n\x01");
+        header.extend_from_slice(b"\r\n\x01\x01\x7f\x00\x00\x01");
         header.extend_from_slice(&echo_port.to_be_bytes());
-        header.extend_from_slice(&[1, 127, 0, 0, 1, b'\r', b'\n']);
+        header.extend_from_slice(b"\r\n");
         good.write_all(&header).expect("writes");
         good.write_all(b"ping").expect("writes");
         let mut back = [0u8; 4];
