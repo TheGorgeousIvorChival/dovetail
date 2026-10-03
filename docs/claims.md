@@ -6,17 +6,17 @@ removed, it is marked.** "Not yet proven" is a line in a status table and a usef
 one, because it names the next slice.
 
 Nothing here is checked by a run — the verdicts below are transcriptions of named
-runs, read on 2026-10-03 at `main` = `68d76bd`. A verdict goes stale the way a
+runs, read on 2026-10-03 at `main` = `94cd774`. A verdict goes stale the way a
 benchmark does, and the file that goes stale first is this one. The runs it quotes:
 
 | run | what it decided |
 | --- | --- |
-| `ci.yml` 37093721583 | six jobs, all green |
-| `bench.yml` 37093721588 | gates 1, 2 and 3 green on all four runners; gate 3 times 227 lengths from 65 B up |
-| `conformance.yml` 37093721591 | one upstream suite ran green against upstream's own code, six skipped |
-| `compare.yml` 37093721586 | offline table green on two runners |
-| `safety.yml` 37077538125 | Miri PASS — **on `e2b8bfa`, which predates `chacha::sse2`** |
-| `./scripts/check-upstream-pins.sh`, run by hand | 7 of 7 pins resolve |
+| `ci.yml` 37101366003 | eight jobs, all green (test matrix, lint, upstream pins on 3 runners, prompt check at 29 prompts) |
+| `bench.yml` 37101083050 | gates 1, 2 and 3 green on all four runners; gate 1 at 3600 shapes, gate 2 at 300 lengths, gate 3 over 235 lengths from 65 B up |
+| `conformance.yml` 37101365980 | one upstream suite ran green against a Dovetail binary (`zeronet` raw-`TCP` `VLESS`), six skipped |
+| `compare.yml` 37101083068 | success |
+| `safety.yml` | **no runs in this repository** — the quoted Miri PASS predates it, so no verdict is transcribed |
+| `./scripts/check-upstream-pins.sh`, via `ci.yml` upstream jobs in run 37101366003 | 7 of 7 pins resolve on all three runners |
 
 Verdict vocabulary, and nothing else:
 
@@ -33,28 +33,28 @@ Verdict vocabulary, and nothing else:
 
 | claim | checked by | verdict |
 | --- | --- | --- |
-| `cargo test --workspace` green on linux x86_64, macos aarch64, windows x86_64 | `ci.yml` `test (…x86_64)` / `test (…aarch64)`, run 37088214542 | green |
-| `clippy` clean under `pedantic`, `-D warnings` | `ci.yml` `lint and docs`, run 37088214542 | green |
-| `record::fill_exact` bit-identical at 3504 shapes on all four runners | `bench.yml` gate 1, run 37093721588 (3504 = 292 lengths x 6 offsets x 2 key pairs) | green |
-| `chacha::avx2`, `chacha::sse2` executed, gates 1 and 2 pass on both x86_64 runners | `bench.yml` gate 1 + gate 2 on `linux x86_64`, `windows x86_64`, run 37093721588 | green |
-| not slower at any **measured** length from 65 B up | `bench.yml` gate 3, run 37095225286: 227 timed lengths, green on all four runners, worst 1.00x at 80 B on `macos aarch64` and 1.03x at 320 B on `linux x86_64`, none below the 0.95x bar | green at the bar the gate actually sets, which is 5% below the claim's wording |
+| `cargo test --workspace` green on linux x86_64, macos aarch64, windows x86_64 | `ci.yml` `test (…)` jobs, run 37101366003 | green, all three |
+| `clippy` clean under `pedantic`, `-D warnings` | `ci.yml` `lint and docs`, run 37101366003 | green |
+| `record::fill_exact` bit-identical at 3600 shapes on all four runners | `bench.yml` gate 1, run 37101083050 (3600 = 300 lengths x 6 offsets x 2 key pairs) | green |
+| `chacha::avx2`, `chacha::sse2` executed, gates 1 and 2 pass on both x86_64 runners | `bench.yml` gate 1 + gate 2 on `linux x86_64`, `windows x86_64`, run 37101083050 | green |
+| not slower at any **measured** length from 65 B up | `bench.yml` gate 3, run 37101083050: 235 timed lengths, green on all four runners — worst 1.03x at 320 B on `linux x86_64`, 1.03x at 114 B on `macos aarch64`, 1.02x at 127 B on `linux aarch64`, 1.01x at 256 B on `windows x86_64`, none below the 0.95x bar | green at the bar the gate actually sets, which is 5% below the claim's wording |
 | lengths 1-64 B, "a tie by construction and identity-checked only" | gate 1 checks those 64 lengths byte for byte; **gate 3 does not time them** (`TIMING_MIN = 65`) | green for the identity half; the timing half is **not measured anywhere**, by decision, and P17 is the decision's record |
 | TLS backend `rustls` "implemented and compiled in `ci.yml`; handshake unproven" | `ci.yml` builds it on three operating systems; `crates/dovetail-core/src/tls/` contains **zero `#[test]`** | green for "compiles"; **no checker** for any handshake property |
-| seven sources pinned; every one resolves | `./scripts/check-upstream-pins.sh`, run by hand and by `ci.yml` `upstream comparison is current` | green, 7 of 7 |
+| seven sources pinned; every one resolves | `./scripts/check-upstream-pins.sh`, via `ci.yml` `upstream comparison is current` on all three runners, run 37101366003 | green, 7 of 7 |
 | seven `upstream/` checkouts at exact revs | nothing — they are `.gitignore`d and re-derived by `fetch-upstream.sh`; presence was verified by hand (`git rev-parse HEAD` equals the pin, empty `git status --porcelain`, all seven) | **no checker**, and the row says so |
 | four pins' `path` fields name a directory absent at their rev | P3's fetch, by hand: `xray-core` `crypto/chacha20` → `common/crypto/chacha20.go`; `amneziawg-go` `device/noise` → `device/`; `amnezia-client` `src/crypto` → `common/crypto`; `sing-box` `common/crypto` absent and no `chacha20poly1305` string anywhere in the tree (the cipher is the out-of-tree module `sagernet/sing-shadowsocks2`) | **red**, and left red on purpose — P21 records the repair, this slice does not repin |
-| Miri nightly PASS 2026-10-03 | `safety.yml` | green, but on `e2b8bfa`: the current tree has no Miri verdict yet |
-| first green CI run, all six jobs, run 37077244861 | that run | green |
+| Miri nightly PASS 2026-10-03 | nothing in this repository: `safety.yml` has no completed runs here | **no verdict** — the quoted PASS predates this repo, and the current tree (with `chacha::sse2`) has no Miri verdict yet |
+| first green CI run, all six jobs, run 37077244861 | that run, predating this repository; the comparable run here is `ci.yml` 37098689265, six jobs green | green there, **stale** here — the README row quotes a run this repo never produced |
 
 ## The README's claim table
 
 | claim | checked by | verdict |
 | --- | --- | --- |
-| byte-identical output, every length, every device | `bench.yml` gate 1 before any timing; `core::tests::every_rung_matches_the_reference` at 528 shapes | green |
-| not slower at any measured length from 65 B up | `bench.yml` gate 3 over lengths ≥ 65 B | **the gate tolerates 5%**: `BAR = 0.95` (changed in `e40a5a1`), so a length at 0.96x passes while this row says "not slower". Two narrowing decisions are now stacked — the band below 65 B is untimed (P17) and the bar is a 5% tolerance (`e40a5a1`) — and the claim names neither. |
-| no use-after-free, no leak | `safety.yml` Miri for the safe-Rust paths; the differential test for the SIMD paths | green for the paths Miri reaches; **no checker** for the SIMD paths — a differential test proves the bytes, not the absence of UB. `safety.yml`'s last completed run is on `e2b8bfa`, which predates `chacha::sse2`, so the one-block tail has no Miri verdict yet |
-| no work generated and discarded | `bench.yml` gate 2, over the ladder's own count, at every length and 6 block offsets; plus `record::tests::the_ladder_reports_the_blocks_the_caller_asked_for` and `…the_block_count_check_fails_when_the_count_is_wrong` | green, and it can fail: `xor_groups` returns the blocks it generated. It was **vacuous** before `2d89013` — `fill_exact` returned `blocks_for(len)` and gate 2 compared it against `blocks_for(len)` |
-| no heap allocation, no zero-fill | `dovetail-bench`'s counting allocator, gate 2 | green, and it can fail: it counts `alloc`/`dealloc` and `write_zeroed` deltas |
+| byte-identical output, every length, every device | `bench.yml` gate 1 before any timing, run 37101083050 at 3600 shapes; `core::tests::every_rung_matches_the_reference` at 528 shapes | green |
+| not slower at any measured length from 65 B up | `bench.yml` gate 3 over 235 lengths ≥ 65 B, run 37101083050 | **the gate tolerates 5%**: `BAR = 0.95`, so a length at 0.96x passes while this row says "not slower". Two narrowing decisions are now stacked — the band below 65 B is untimed (P17) and the bar is a 5% tolerance — and the claim names neither. |
+| no use-after-free, no leak | Miri for the safe-Rust paths, run by `safety.yml`; the differential test for the SIMD paths | **no run here** — `safety.yml` has no completed runs in this repository, so neither the safe paths nor the SIMD gap have a current verdict; a differential test proves the bytes, not the absence of UB |
+| no work generated and discarded | `bench.yml` gate 2 at 300 lengths, run 37101083050, over the ladder's own count at every length and 6 block offsets; plus `record::tests::the_ladder_reports_the_blocks_the_caller_asked_for` and `…the_block_count_check_fails_when_the_count_is_wrong` | green, and it can fail: `xor_groups` returns the blocks it generated |
+| no heap allocation, no zero-fill | `dovetail-bench`'s counting allocator, gate 2, run 37101083050 | green, and it can fail: it counts `alloc`/`dealloc` and `write_zeroed` deltas |
 
 ## The rest of the README
 
@@ -73,9 +73,9 @@ Verdict vocabulary, and nothing else:
 | "Quiche is the default QUIC" | nothing: `quiche` is in no manifest | **no checker** — a decision rule for a rung that does not exist |
 | every way PattNG can connect parses | `vless::tests::unknown_transports_parse_but_stay_planned`, plus `support()` for the rows the format can express | green for the rows a link can name; the 10-row matrix exists only in a benchmark report |
 | one method dials at a time | `vless::support()` and `dovetail-zeronet run`'s TCP reachability | green |
-| upstream suites run against Dovetail binaries | `run-upstream-suite.sh`, measured by reading each fetched pin for an injection seam: 0 of 7 | **red, measured** — 2 of 7 have a seam (`xray-rust` `XRAY_VLESS_FULL_BINARY`, `zeronet` `ZRAY_XRAY_BINARY`); both need a VLESS server role `dovetail-zeronet` has no subcommand for. The script now refuses a `PASS` naming a binary it did not execute |
-| `dovetail-zeronet check` parses offline, `run` dials TCP and sends nothing | the two verbs in `crates/dovetail-zeronet/src/main.rs` | green, by reading |
-| every slice in `prompts.md` carries status, leverage, effort, gates, dependencies | `dovetail-prompt check`, run by `ci.yml` `the prompt library is well formed` | green, 0 errors |
+| upstream suites run against Dovetail binaries | `conformance.yml` run 37101365980 via `run-upstream-suite.sh`: 1 of 7 ran green (`zeronet` raw-`TCP` `VLESS` vs `dovetail-zeronet` at `97a99734`), 6 skipped | green for the subset — the other eight oracle tests need transports the binary closes on; the script still refuses a `PASS` naming a binary it did not execute |
+| `dovetail-zeronet check` parses offline, `run` dials TCP and sends nothing | the two verbs in `crates/dovetail-zeronet/src/main.rs` | green, by reading; the newer `version`, `x25519` and `run -c` verbs are covered by `proxy::tests` and `json::tests` in the `ci.yml` test matrix |
+| every slice in `prompts.md` carries status, leverage, effort, gates, dependencies | `dovetail-prompt check`, run by `ci.yml` `the prompt library is well formed`, run 37101366003 | green, 0 errors, 29 prompts |
 
 ## `docs/methodology.md`
 
@@ -86,7 +86,7 @@ Verdict vocabulary, and nothing else:
 | a length under the bar is re-measured at 4x the budget | `measure_len`'s re-measure branch | green, by reading |
 | gate 2 covers the record layer at every length and the rung-1 header encode across three address families | `gate_deterministic`, over `192.0.2.53`, `2001:db8::1`, `example.com` | green for the counts |
 | `check-leak-surface.sh` is the static half: no DNS, no leak primitives, no printing, no wall clock | the script's four `git grep`s, run by `ci.yml` `lint and docs` | green |
-| `check-upstream-pins.sh` fails on an unresolvable pin, a missing `rev`, or an unparseable file; each `rev` by depth-1 fetch, not `ls-remote` | the script; ran by hand: 7 of 7 resolve | green |
+| `check-upstream-pins.sh` fails on an unresolvable pin, a missing `rev`, or an unparseable file; each `rev` by depth-1 fetch, not `ls-remote` | the script; 7 of 7 resolve on all three `ci.yml` runners, run 37101366003 | green |
 | `update-pins.sh` prints the diff and opens a PR rather than pushing | the script's `gh pr create` | green, imprecise: it does `git push` the branch it opens the PR from |
 | every benchmark report ends with the per-method matrix | `methods::table()` appended in `build_report` | green |
 | a SIMD backend is measured on one native runner per ISA | `bench.yml`'s four-runner matrix | green |
@@ -98,7 +98,7 @@ Verdict vocabulary, and nothing else:
 | every `unsafe` block carries a `SAFETY:` comment, enforced by `undocumented_unsafe_blocks` | `[workspace.lints.clippy]`, run by `ci.yml` `lint and docs` | green |
 | `unsafe` is allowed only where the safe form was **measured** slower | nothing: no gate, script or test records that measurement | **no checker** |
 | the seven wins listed under "what this has already bought" | six of the seven are safe-Rust changes; the file lists them under an unsafe policy, and the `unsafe`-surface claim does not follow from them | **no checker** on the framing; each code change is visible in the tree |
-| the differential sweep is 528 shapes in tests and 3504 in the gate, unchanged and green | `core::tests` (44 lengths x 6 offsets x 2 pairs) and `bench.yml` gate 1 | green |
+| the differential sweep is 528 shapes in tests and 3600 in the gate, unchanged and green | `core::tests` (44 lengths x 6 offsets x 2 pairs) and `bench.yml` gate 1 | green |
 | the AVX2 probe leaves the hot loop, which "splits into two branch-free loops" | `xor_blocks` now branches once around the whole ladder | **stale**, corrected |
 | "`xor_block` tail: bounds-checked indexing only" | on `x86_64` the one-block tail is `chacha::sse2`, which is `unsafe` intrinsics | **stale**, corrected |
 | `grep allow_plaintext_to_public` finds every plaintext path | the grep hits `policy.rs` (the constructor) and `dovetail-bench/src/methods.rs` (a report cell). The plaintext decision lives in `transport::Security::NoneToPublic` and does not mention the opt-in | **red**, corrected |
@@ -113,7 +113,7 @@ Verdict vocabulary, and nothing else:
 | one generic function instantiated for three backends | four | **stale**, corrected |
 | keystream is "XORed in place, never staged" | a partial block's last sub-chunk is materialised in a 16-byte stack scratch and XORed from, in both `xor_groups` and `portable::xor_block` | **stale** — corrected to name the exception |
 | the counter advances only by blocks produced | the ladder advances it by what each pass produced; gate 2 cannot confirm it | green by reading, **vacuous** as a gate |
-| 528 shapes in tests, 3504 in the gate | as above | green |
+| 528 shapes in tests, 3600 in the gate | as above, run 37101083050 | green |
 | the reference is scalar on aarch64, AVX2 on x86_64 with AVX2, SSE2 without | `core::backend()` and the pinned crate's `backends.rs` | read |
 | `bench.yml` runs weekly and fails on any single regressing length | `bench.yml`'s cron and gate 3 | green |
 
@@ -124,18 +124,18 @@ Verdict vocabulary, and nothing else:
 | every row parses, exactly one dials | `vless::support()`, generated into the report's per-method table; rows 5, 6, 9, 10 are static text in `methods.rs`, not read from the parser | green for the rows a link can express; **no checker** for the static rows |
 | `VlessLink::parse` never fails on an unknown transport | `vless::tests::unknown_transports_parse_but_stay_planned` | green |
 | the row statuses in the table | rows 1-4, 7, 8 come from `live_support()`; rows 5, 6, 9, 10 are written by hand | partly checked |
-| `compare.yml` prints an offline table, and live columns with a secret | the workflow's `vless_link` and `live` inputs; `compare.yml` ran green on `f128486` | green |
+| `compare.yml` prints an offline table, and live columns with a secret | the workflow's `vless_link` and `live` inputs; `compare.yml` ran green in 37101083068 | green |
 | `UnsafeOptIn` gates plaintext-to-public and unsafe fingerprints | `policy::UnsafeOptIn`; `vless::tests::pattng_plaintext_to_public_needs_opt_in`, `…unsafe_fingerprint_needs_opt_in` | green |
 
 ## `docs/conformance.md`
 
 | claim | checked by | verdict |
 | --- | --- | --- |
-| "running upstream suites **against Dovetail binaries** in CI" | nothing points a suite at a Dovetail binary; all seven entries are `test_enabled = false` and skip | **red, measured** — the doc now says 0 of 7 and names the two seams; the mechanism that would report otherwise is disabled by `run-upstream-suite.sh` |
-| `test_enabled = true` means the suite runs on every push | `conformance.yml` → `run-upstream-suite.sh`, run 37088214457 | green, and see the row above for what it proves |
+| "running upstream suites **against Dovetail binaries** in CI" | `zeronet` points its suite at `dovetail-zeronet` via `ZRAY_XRAY_BINARY`; six entries are `test_enabled = false` and skip | green for the 1-test subset, measured in run 37101365980 — the doc says 1 of 7 and names the eight excluded oracle tests with what each got instead of a listener |
+| `test_enabled = true` means the suite runs on every push | `conformance.yml` → `run-upstream-suite.sh`, run 37101365980: `RUNNING: zeronet …`, then `PASS: zeronet suite green against dovetail-zeronet` | green, and the log line names the binary and the pin |
 | `test_enabled = false` means the job is created, skips, and prints the reason | the same log: six `SKIPPED:` lines, each naming the pin | green |
-| a suite flips to `true` only when the benchmark gate is green on all four ISA runners | all seven entries are `false`, so the rule holds vacuously | **green, vacuously** — no entry claims eligibility it has not earned |
-| the seven revs and enabled bits in the current-state table | `upstream/pins.toml` | green, all seven match |
+| a suite flips to `true` only when the benchmark gate is green on all four ISA runners | `zeronet` is `true` as the P19 differential subset without a benchmark gate behind it | **exception, named** — P19's own gate authorizes the flip and the pin note says so; the general rule still holds for every other entry |
+| the seven revs and enabled bits in the current-state table | `upstream/pins.toml` | green: six `false`, one `true`, all match |
 
 ## `docs/function/chacha-xor-blocks.md`
 
@@ -147,7 +147,7 @@ Verdict vocabulary, and nothing else:
 | Miri covers `portable` in full and `sse2` in full | `safety.yml`'s last completed run predates `chacha::sse2` | green for `portable`; **no CI run yet** for `sse2` |
 | `rot_chunks` is `vpshufd` on AVX2 and `vextq_u32` on NEON | also `pshufd` in `sse2.rs` | **stale**, corrected |
 | the `vpshufd` immediates are literals proved by `rot_imm` and a `const` assertion | `avx2.rs` | green |
-| the differential test catches a lane mix-up at 3504 shapes | `bench.yml` gate 1 | green |
+| the differential test catches a lane mix-up at 3600 shapes, run 37101083050 | `bench.yml` gate 1 | green |
 | the one-block band is a tie, with the numbers | see the paragraph; the measurement was taken on one contributor's aarch64 machine and no named runner reproduces it | read, and the one claim in this file no CI run checks |
 
 ## `docs/function/record-fill-exact.md`
@@ -197,3 +197,6 @@ Verdict vocabulary, and nothing else:
 | the one-block timing band was a tie no bar could certify | P17, now **done**: `TIMING_MIN = 65`, so gate 3 times 227 lengths from 65 B up and gate 1 keeps the 64 short ones byte-for-byte. The consequence to keep in view: no runner now produces a number for 1-64 B, on any architecture. |
 | Miri has not run on a tree that contains `chacha::sse2` | the status table names the run and its commit |
 | `docs/function/tls-provider.md` claimed handshake tests that do not exist | corrected there; P6 carries the work |
+| eight oracle tests fail against `dovetail-zeronet`, by name with expected vs produced | `conformance.yml` run 37100395876 (red): 1 passed, 8 failed | recorded in `docs/conformance.md` — five expect unimplemented protocol listeners, two expect `ws`/`httpupgrade` handshakes, one times out on `grpc`; P24–P28 carry each rung |
+| the five seamed-out pins have no socket-taking harness either | read at each pin: no `os/exec`, no tests, or `.so` constants | recorded in `docs/conformance.md`, per pin |
+| every quoted run predates the repository it audits | this re-audit on `main` = `94cd774` | re-based above on runs 37101366003, 37101083050, 37101365980 and 37101083068; `safety.yml` has no runs here, so the Miri rows carry no verdict |
