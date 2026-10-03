@@ -18,9 +18,30 @@ cd "$(dirname "$0")/.."
 
 status=0
 
-# This file defines the pattern it searches for, so it excludes itself: without
-# the exclusion the grep below matches lines 4 and 21 here and the gate never passes.
-if git grep -I -n -E 'TODO|FIXME|XXX|HACK' -- '*.rs' 'scripts/*' '.github/**/*' ':!crates/dovetail-prompt/prompts.md' ':!scripts/check-comments.sh'; then
+# One pattern for every marker search below: a bare word, except `XXX` which
+# must not be part of a longer `X` run, so a six-`X` `mktemp` template passes
+# while a real marker still fails (`\b` is not it: git grep's engine ignores it).
+markers='TODO|FIXME|HACK|(^|[^A-Za-z0-9_])XXX([^A-Za-z0-9_]|$)'
+
+# Self-test, every run: the pattern must let the template through and still
+# catch a bare marker, or this gate proves nothing. Plain POSIX `grep`, same
+# pattern the `git grep` below runs; fixtures live in a temp dir, never in git.
+selftest="$(mktemp -d)"
+printf '%s\n' 'tmp="$(mktemp -d prefix.XXXXXX)"' > "$selftest/template.sh"
+printf '%s\n' '// TODO: trace left behind' '// XXX: trace left behind' > "$selftest/marker.rs"
+if grep -E -q "$markers" "$selftest/template.sh"; then
+  echo "::error::self-test: the marker grep flags an mktemp template"
+  status=1
+fi
+if ! grep -E -q "$markers" "$selftest/marker.rs"; then
+  echo "::error::self-test: the marker grep misses a real marker"
+  status=1
+fi
+rm -rf "$selftest"
+
+# This file names the markers it searches for, so it excludes itself: without
+# the exclusion the grep below matches its own prose and the gate never passes.
+if git grep -I -n -E "$markers" -- '*.rs' 'scripts/*' '.github/**/*' ':!crates/dovetail-prompt/prompts.md' ':!scripts/check-comments.sh'; then
   echo "::error::trace markers do not land in this tree; the roadmap lives in prompts.md"
   status=1
 fi
