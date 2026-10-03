@@ -375,7 +375,7 @@ Repair the four values to the paths measured here, or restate each note against 
 ## P13 · Stop check-comments.sh failing on mktemp templates
 
 **When to use:** When `check-comments.sh` fails a change that carries no trace marker: its marker grep matches the six-X run in any `mktemp` template, so an atomic write-then-rename script cannot land while the gate stands as written.
-**Status:** todo
+**Status:** done
 **Leverage:** 3
 **Effort:** small
 **Gates:** `./scripts/check-comments.sh` green on a tree containing an `mktemp` template; CI: `ci.yml` lint job green
