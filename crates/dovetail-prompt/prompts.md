@@ -463,7 +463,7 @@ The `VMess` header is a hundred bytes of sealed material behind a timestamp, so 
 ## P19 · Name the two matrix rows the serving roles already earned
 
 **When to use:** Whenever a protocol role lands and the README connection-methods matrix still describes it as planned: rows 5 and 7 still read `planned` while the raw-`TCP` `trojan` and `shadowsocks` rungs are green in `conformance.yml`. Row 6 was flipped against run `37122185418`, which is the shape to copy.
-**Status:** todo
+**Status:** done
 **Leverage:** 2
 **Effort:** small
 **Gates:** CI: `ci.yml` green; `conformance.yml` green with `trojan_over_raw_tcp_matches_the_oracle` and `shadowsocks_over_raw_tcp_matches_the_oracle` executed against `dovetail-zeronet`

@@ -22,9 +22,9 @@ graph TD
 | 2 | VLESS TCP TLS (Vision optional) | `Planned` — parses, `support()` names the reason | TLS handshake differential vs Xray-core pin |
 | 3 | VLESS TCP none (private) | `Planned` | framing differential |
 | 4 | VLESS/TROJAN `security=none` to public (PattNG ext.) | `UnsafeRequiresOptIn` — parses, dials only with `UnsafeOptIn::allow_plaintext_to_public` | policy sign-off + isolated test net only |
-| 5 | TROJAN TCP TLS | `Planned` — schema reserved | password framing differential |
+| 5 | TROJAN TCP TLS | `Implemented` — password framing over raw `TCP` (no `UDP`) | `xray_oracle::trojan_over_raw_tcp_matches_the_oracle` (conformance 37132662374) |
 | 6 | VMess TCP | `Planned` | AEAD differential first |
-| 7 | Shadowsocks TCP/UDP | `Planned` | shares the record rung (`record::fill_exact`) |
+| 7 | Shadowsocks TCP/UDP | `Implemented` — `aes-256-gcm` over raw `TCP` (no `2022`, no `UDP`) | `xray_oracle::shadowsocks_over_raw_tcp_matches_the_oracle` (conformance 37132662374) |
 | 8 | VLESS WS / XHTTP / gRPC / QUIC | `Planned`, one rung each | one transport per rung, never batched |
 | 9 | WireGuard / MASQUE (H2+H3), Hysteria2, Aether | `Planned` | the ZeroNet WARP paths; after XHTTP |
 | 10 | `cipherSuites` + `unsafe-*` fingerprints (PattNG ext.) | `UnsafeRequiresOptIn` — parsed, carried, never default | `policy::UnsafeOptIn::allow_unsafe_fingerprint` + ClientHello differential |
