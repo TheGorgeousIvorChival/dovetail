@@ -15,8 +15,6 @@ workspace = true
 aes = "0.8"
 # AEAD for the `shadowsocks` chunk transport (`aes-256-gcm` only).
 aes-gcm = "0.10"
-# Data frames for the `VMess` rung (`auto` negotiates this).
-chacha20poly1305 = "0.10"
 # The ZeroNet app on the *released* core: `version = "0.1.0"` is the requirement
 # (see the workspace `dovetail-core` entry) and `path` is the checkout fallback
 # so this builds without a registry. Releasing `dovetail-core 0.1.0` keeps this
@@ -38,3 +36,11 @@ sha3 = "0.10"
 sha2 = "0.10"
 # Real X25519 for the `x25519` subcommand the oracle seams call for keys.
 x25519-dalek = "2"
+
+[dev-dependencies]
+# The `AEAD` the data path used before `dovetail_core::aead` took over, used
+# *only* by the differential test that decides whether the swap is allowed in.
+# A dev-dependency is not linked into the shipped binary, which is the whole
+# point: if the shipped path could reach it, "bit-identical" would be a
+# statement about this crate comparing itself.
+chacha20poly1305 = "0.10"
