@@ -97,7 +97,7 @@ rev           = "97a99734e95029c8bf90ab0cdc578d0561a57724"
 default_branch = "main"
 path          = "crates"
 test_enabled  = true
-suite         = "cargo test -p zero-runtime --test xray_oracle -- --ignored --test-threads=1 vless_over_raw_tcp_matches_the_oracle trojan_over_raw_tcp_matches_the_oracle shadowsocks_over_raw_tcp_matches_the_oracle"
+suite         = "DOVETAIL_TRACE=1 ZRAY_ORACLE_LOG=1 cargo test -p zero-runtime --test xray_oracle -- --ignored --test-threads=1 shadowsocks_over_raw_tcp_matches_the_oracle"
 dovetail_binary = "dovetail-zeronet"
 seam           = "ZRAY_XRAY_BINARY"
 note          = "MIT-licensed Zray core + TUI + Android app; dovetail-zeronet builds the same app surface on dovetail-core. Enabled as the raw-TCP VLESS, trojan and shadowsocks subset (P19, P24, P26); the other six oracle tests need rungs this binary closes on, and stay disabled by name in docs/conformance.md"

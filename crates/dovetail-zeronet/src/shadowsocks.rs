@@ -25,24 +25,33 @@ const READ_CHUNK: usize = 0x4000;
 
 /// Serve one `shadowsocks` connection: salt, address chunk, dial, relay sealed.
 pub(crate) fn serve(mut stream: TcpStream, password: &str, method: &str, freedom: bool) {
+    trace("accept");
     if method != "aes-256-gcm" || !freedom {
+        trace("refuse method-or-freedom");
         return;
     }
     let master = master_key(password);
     let mut salt = [0u8; SALT_LEN];
     if read_exact(&mut stream, &mut salt).is_err() {
+        trace("no peer salt");
         return;
     }
+    trace("peer salt read");
     let Some(mut recv) = Cipher::new(&master, &salt) else {
         return;
     };
     let Some(first) = open_chunk(&mut stream, &mut recv) else {
+        trace("no first chunk");
         return;
     };
+    trace(&format!("first chunk {} bytes", first.len()));
     let Some((target, used)) = parse_addr_header(&first) else {
+        trace("no target header");
         return;
     };
+    trace(&format!("dial {target}"));
     let Ok(mut uplink) = TcpStream::connect_timeout(&target, Duration::from_secs(8)) else {
+        trace("dial failed");
         return;
     };
     if uplink.write_all(&first[used..]).is_err() {
@@ -58,7 +67,15 @@ pub(crate) fn serve(mut stream: TcpStream, password: &str, method: &str, freedom
     if stream.write_all(&salt).is_err() {
         return;
     }
+    trace("relay starts");
     pump_relay(&uplink, &stream, send, recv);
+}
+
+/// Stderr line when `DOVETAIL_TRACE` is set, silence otherwise.
+fn trace(message: &str) {
+    if std::env::var_os("DOVETAIL_TRACE").is_some() {
+        eprintln!("dovetail-ss: {message}");
+    }
 }
 
 /// Dial a `shadowsocks` server for a target: salt, sealed address, read salt.
