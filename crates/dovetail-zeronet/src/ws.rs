@@ -118,7 +118,7 @@ fn fresh_key() -> Option<String> {
 
 /// XOR `buf` with the 4-byte mask repeated; the mask period divides 16, so
 /// whole 16-byte chunks take one XOR each and only the tail stays scalar.
-fn apply_mask(buf: &mut [u8], mask: &[u8; 4]) {
+fn apply_mask(buf: &mut [u8], mask: [u8; 4]) {
     let wide = [
         mask[0], mask[1], mask[2], mask[3], mask[0], mask[1], mask[2], mask[3], mask[0], mask[1],
         mask[2], mask[3], mask[0], mask[1], mask[2], mask[3],
@@ -257,7 +257,7 @@ impl WsReader {
             crate::proxy::read_exact(&mut self.read, &mut payload).ok()?;
         }
         if let Some(mask) = mask {
-            apply_mask(&mut payload, &mask);
+            apply_mask(&mut payload, mask);
         }
         Some((fin, opcode, payload))
     }
@@ -394,7 +394,7 @@ fn write_frame(stream: &mut TcpStream, masked: bool, opcode: u8, data: &[u8]) ->
         return false;
     }
     let mut data = data.to_vec();
-    apply_mask(&mut data, &mask);
+    apply_mask(&mut data, mask);
     stream.write_all(&data).is_ok()
 }
 
@@ -537,9 +537,9 @@ mod tests {
                     *byte ^= mask[i & 3];
                 }
                 let mut got = plain.clone();
-                apply_mask(&mut got, &mask);
+                apply_mask(&mut got, mask);
                 assert_eq!(got, want, "len {len} mask {mask:?}");
-                apply_mask(&mut got, &mask);
+                apply_mask(&mut got, mask);
                 assert_eq!(got, plain, "len {len} unmasks");
             }
         }
