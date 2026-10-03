@@ -47,6 +47,13 @@ pub(crate) fn serve_file(path: &str) -> ! {
                 "vless" => {
                     let id = inbound_id(inbound);
                     let carrier = inbound_carrier(inbound);
+                    if !vless_security_supported(stream_security(inbound)) {
+                        eprintln!(
+                            "unsupported vless security `{}` in {path}: serves raw TCP only",
+                            stream_security(inbound)
+                        );
+                        continue;
+                    }
                     let address_clone = address.clone();
                     let role = Role::Vless {
                         id,
@@ -808,6 +815,9 @@ fn find_vless_outbound(root: &Json) -> Option<VlessOut> {
         if outbound.get("protocol").and_then(Json::as_str) != Some("vless") {
             continue;
         }
+        if !vless_security_supported(stream_security(outbound)) {
+            continue;
+        }
         let vnext = outbound
             .get("settings")
             .and_then(|s| s.get("vnext"))
@@ -942,6 +952,19 @@ fn outbound_carrier(outbound: &Json, address: &str) -> (Carrier, String) {
 /// Carrier from an inbound's `streamSettings`, raw `TCP` when unnamed.
 fn inbound_carrier(inbound: &Json) -> Carrier {
     stream_carrier(inbound.get("streamSettings"))
+}
+
+/// Outer security of an inbound or outbound, `""` when unnamed.
+fn stream_security(node: &Json) -> &str {
+    node.get("streamSettings")
+        .and_then(|s| s.get("security"))
+        .and_then(Json::as_str)
+        .unwrap_or("")
+}
+
+/// Whether this build serves or dials that security over raw `TCP`.
+fn vless_security_supported(sec: &str) -> bool {
+    sec.is_empty() || sec == "none"
 }
 
 /// Lowercase-hex `8-4-4-4-12` UUID to bytes, `None` on any other shape.
@@ -1109,5 +1132,42 @@ mod tests {
         reader.write_all(&[1u8; 18]).expect("writes");
         assert!(writer.join().expect("joins").is_none());
         drop(reader);
+    }
+
+    #[test]
+    fn vless_security_gate_keeps_plain_and_refuses_reality() {
+        let plain =
+            crate::json::parse(r#"{"streamSettings": {"network": "tcp"}}"#).expect("parses");
+        let none =
+            crate::json::parse(r#"{"streamSettings": {"network": "tcp", "security": "none"}}"#)
+                .expect("parses");
+        let reality =
+            crate::json::parse(r#"{"streamSettings": {"network": "tcp", "security": "reality"}}"#)
+                .expect("parses");
+        let tls =
+            crate::json::parse(r#"{"streamSettings": {"network": "tcp", "security": "tls"}}"#)
+                .expect("parses");
+        assert!(vless_security_supported(stream_security(&plain)));
+        assert!(vless_security_supported(stream_security(&none)));
+        assert!(!vless_security_supported(stream_security(&reality)));
+        assert!(!vless_security_supported(stream_security(&tls)));
+    }
+
+    #[test]
+    fn vless_outbound_with_reality_security_is_skipped() {
+        let root = crate::json::parse(
+            r#"{"outbounds": [{"protocol": "vless", "settings": {"vnext": [{"address": "127.0.0.1",
+            "port": 443, "users": [{"id": "aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee"}]}]},
+            "streamSettings": {"network": "tcp", "security": "reality"}}]}"#,
+        )
+        .expect("parses");
+        assert!(find_vless_outbound(&root).is_none());
+        let root = crate::json::parse(
+            r#"{"outbounds": [{"protocol": "vless", "settings": {"vnext": [{"address": "127.0.0.1",
+            "port": 443, "users": [{"id": "aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee"}]}]},
+            "streamSettings": {"network": "tcp"}}]}"#,
+        )
+        .expect("parses");
+        assert!(find_vless_outbound(&root).is_some());
     }
 }
