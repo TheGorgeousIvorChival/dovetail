@@ -27,6 +27,7 @@
 
 mod compare;
 mod count;
+mod framing;
 mod methods;
 
 use count::Counting;
@@ -520,6 +521,16 @@ fn main() {
 
     let mut report = build_report(&declared, shapes, measured_lengths, &rows);
 
+    // Gate 4: the framings, which had no timed reference until this gate. Each row
+    // is byte-checked against a reference build before it is timed, so identity
+    // comes before timing here exactly as in gate 1.
+    let frames = framing::gate_framing();
+    println!(
+        "gate 4 passed: {} framing rows, byte-identical to their references",
+        frames.len()
+    );
+    report.push_str(&framing::report(&frames));
+
     // Config comparison, after the proof gates: hand CI a working link and it
     // appends the redacted offline table (and the empty-with-reason live
     // cells). A bad link fails here, not silently.
@@ -542,6 +553,22 @@ fn main() {
     // report", which is the one moment the numbers are wanted.
     std::fs::create_dir_all("target").expect("create target dir");
     std::fs::write("target/bench-report.md", &report).expect("write report");
+
+    let slow_frames: Vec<&framing::Row> = frames.iter().filter(|r| r.ratio() < BAR).collect();
+    assert!(
+        slow_frames.is_empty(),
+        "FRAMING REGRESSION: a framing slower than its reference at {} row(s), worst {:.3}x: {}",
+        slow_frames.len(),
+        slow_frames
+            .iter()
+            .map(|r| r.ratio())
+            .fold(f64::INFINITY, f64::min),
+        slow_frames
+            .iter()
+            .map(|r| format!("{}={:.3}x", r.name, r.ratio()))
+            .collect::<Vec<_>>()
+            .join(" ")
+    );
 
     let failures: Vec<&Row> = rows.iter().filter(|r| r.ratio < BAR).collect();
     assert!(
