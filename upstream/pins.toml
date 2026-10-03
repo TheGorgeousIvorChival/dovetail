@@ -33,7 +33,7 @@
 repo          = "https://github.com/XTLS/Xray-core"
 rev           = "b26a91de4f3294e26a0ad0a970b81a386a41f789"
 default_branch = "main"
-path          = "crypto/chacha20"
+path          = "common/crypto"
 test_enabled  = false
 suite         = "go test -count=1 -timeout 8m ./proxy/vless/..."
 dovetail_binary = ""
@@ -46,16 +46,16 @@ rev           = "c992297988288565a24a6d36e2cf4d77cb835fcd"
 # a pin that named it would sit behind nothing and the checker's staleness note
 # would never fire.
 default_branch = "testing"
-path          = "common/crypto"
+path          = "protocol/shadowsocks"
 test_enabled  = false
 dovetail_binary = ""
-note          = "the chacha20poly1305 usage whose one-shot interface forces a refill per call"
+note          = "the chacha20poly1305 usage whose one-shot interface forces a refill per call; the cipher itself is the out-of-tree module sagernet/sing-shadowsocks2 (no chacha20poly1305 string in this tree), so path names the in-tree caller"
 
 [sources.amneziawg-go]
 repo          = "https://github.com/amnezia-vpn/amneziawg-go"
 rev           = "b5928efb6ca19f0153958460c3d141f04abc5c2e"
 default_branch = "master"
-path          = "device/noise"
+path          = "device"
 test_enabled  = false
 dovetail_binary = ""
 note          = "hand-rolled ChaCha20 in the WireGuard data path"
@@ -64,7 +64,7 @@ note          = "hand-rolled ChaCha20 in the WireGuard data path"
 repo          = "https://github.com/amnezia-vpn/amnezia-client"
 rev           = "94b51df24790bf52427afe82d81c87a95460bdfd"
 default_branch = "dev"
-path          = "src/crypto"
+path          = "common/crypto"
 test_enabled  = false
 dovetail_binary = ""
 note          = "the C++ Amnezia core; the second implementation of the same wire format"

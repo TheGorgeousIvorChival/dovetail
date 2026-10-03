@@ -17,15 +17,15 @@ cd "$(dirname "$0")/.."
 name_filter="${1:-}"
 pins_file="upstream/pins.toml"
 
-# name<TAB>repo<TAB>rev<TAB>enabled<TAB>suite<TAB>binary — same TOML subset the pin
-# checker reads, plus the three conformance fields.
+# name<TAB>repo<TAB>rev<TAB>enabled<TAB>suite<TAB>binary<TAB>seam<TAB>path — same TOML
+# subset the pin checker reads, plus the conformance fields and the checked path.
 parse_pins() {
   awk '
     function f(v) { return v == "" ? "-" : v }
     /^\[sources\./ {
-      if (name != "") print name "\t" repo "\t" rev "\t" enabled "\t" f(suite) "\t" f(binary) "\t" f(seam)
+      if (name != "") print name "\t" repo "\t" rev "\t" enabled "\t" f(suite) "\t" f(binary) "\t" f(seam) "\t" f(path)
       name = $0; sub(/^\[sources\./, "", name); sub(/\]$/, "", name)
-      repo = ""; rev = ""; enabled = ""; suite = ""; binary = ""; seam = ""
+      repo = ""; rev = ""; enabled = ""; suite = ""; binary = ""; seam = ""; path = ""
       next
     }
     /^repo[[:space:]]*=/ { repo = $0; sub(/^[^=]*=[[:space:]]*"/, "", repo); sub(/"[[:space:]]*$/, "", repo); next }
@@ -34,20 +34,42 @@ parse_pins() {
     /^suite[[:space:]]*=/ { suite = $0; sub(/^[^=]*=[[:space:]]*"/, "", suite); sub(/"[[:space:]]*$/, "", suite); next }
     /^dovetail_binary[[:space:]]*=/ { binary = $0; sub(/^[^=]*=[[:space:]]*"/, "", binary); sub(/"[[:space:]]*$/, "", binary); next }
     /^seam[[:space:]]*=/ { seam = $0; sub(/^[^=]*=[[:space:]]*"/, "", seam); sub(/"[[:space:]]*$/, "", seam); next }
-    END { if (name != "") print name "\t" repo "\t" rev "\t" enabled "\t" f(suite) "\t" f(binary) "\t" f(seam) }
+    /^path[[:space:]]*=/ { path = $0; sub(/^[^=]*=[[:space:]]*"/, "", path); sub(/"[[:space:]]*$/, "", path); next }
+    END { if (name != "") print name "\t" repo "\t" rev "\t" enabled "\t" f(suite) "\t" f(binary) "\t" f(seam) "\t" f(path) }
   ' "$pins_file"
 }
 
 status=0
 ran=0
 workspace="$PWD"
-while IFS=$'\t' read -r name repo rev enabled suite binary seam; do
+while IFS=$'\t' read -r name repo rev enabled suite binary seam path; do
   [[ "$suite" == "-" ]] && suite=""
   [[ "$binary" == "-" ]] && binary=""
   [[ "$seam" == "-" ]] && seam=""
+  [[ "$path" == "-" ]] && path=""
   [[ -n "$name" ]] || continue
   if [[ -n "$name_filter" && "$name" != "$name_filter" ]]; then
     continue
+  fi
+  # The pin's path names the tree the note describes, so it is resolved against
+  # the pinned tree for every entry, enabled or not: the four values repaired
+  # alongside this check rotted precisely because only enabled entries ever
+  # cloned anything. Same depth-1 fetch the pin checker uses, plus a tree
+  # lookup, so a path that names nothing fails here instead of rotting again.
+  if [[ -n "${path:-}" ]]; then
+    scratch="$(mktemp -d)"
+    if git init --quiet --bare "$scratch" >/dev/null 2>&1 \
+      && git -C "$scratch" remote add origin "$repo" >/dev/null 2>&1 \
+      && git -C "$scratch" fetch --quiet --depth 1 origin "$rev" >/dev/null 2>&1 \
+      && git -C "$scratch" cat-file -e "$rev:$path" 2>/dev/null; then
+      echo "path ok: $name $path at ${rev:0:7}"
+    else
+      echo "::error::$name declares path $path but it is absent at $rev"
+      status=1
+      rm -rf "$scratch"
+      continue
+    fi
+    rm -rf "$scratch"
   fi
   if [[ "$enabled" != "true" ]]; then
     echo "SKIPPED: $name @ ${rev:0:7} — no Dovetail binary wired yet (would need ${binary:-nothing exists for this rung yet}); rung not implemented (see docs/conformance.md)"
