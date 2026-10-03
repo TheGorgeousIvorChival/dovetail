@@ -193,7 +193,7 @@ Write the page under `docs/function/` before the merge, not after: a per-archite
 ## P6 · Finish the rustls backend and make a handshake provable
 
 **When to use:** The rustls backend is in the tree and completes no proven handshake yet, so the next question is not whether it compiles but whether it can be held to the same claim as the record layer.
-**Status:** doing
+**Status:** done
 **Leverage:** 4
 **Effort:** large
 **Gates:** `cargo test --workspace --all-features`; `cargo clippy --workspace --all-targets --all-features -- -D warnings`; CI: `ci.yml` test matrix on linux and windows
