@@ -160,7 +160,7 @@ fn base_state(key: &[u8; 32], nonce: &[u8; 12]) -> [u32; 16] {
 /// initial state alive for the feed-forward — is what stops the rounds from
 /// competing with their own inputs for registers. The copy cost sixteen
 /// registers on aarch64 and thirty-two on `x86_64`, which is the whole file.
-#[derive(Clone, Copy)]
+#[derive(Debug, Clone, Copy)]
 pub(crate) struct Base<V> {
     /// Words 0..3, 4..7 and 8..11, each broadcast into every chunk of a vector.
     regs: [V; 3],
