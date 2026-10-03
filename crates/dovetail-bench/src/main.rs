@@ -262,7 +262,7 @@ fn gate_deterministic(key: &[u8; 32], nonce: &[u8; 12]) -> usize {
     // buffers live outside the window; only the framing is inside it.
     {
         let uuid = [0xabu8; 16];
-        for &len in [0usize, 1, 64, 1400, 8171] {
+        for len in [0usize, 1, 64, 1400, 8171] {
             let content = vec![0u8; len];
             let mut sealed = vec![0u8; 16 + 5 + len + 256];
             let mut opened = vec![0u8; 16 + 5 + len + 256];
