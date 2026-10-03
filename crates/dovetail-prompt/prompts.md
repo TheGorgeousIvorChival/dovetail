@@ -665,7 +665,7 @@ Give `dovetail-zeronet` a `vmess` server role and a `vmess` client role over raw
 ## P26 · Shadowsocks protocol rung over TCP
 
 **When to use:** When the shadowsocks oracle failure is the next one to clear: it expects a `shadowsocks` listener and gets exit 1.
-**Status:** todo
+**Status:** done
 **Leverage:** 3
 **Effort:** medium
 **Gates:** `cargo test --workspace`; CI: `conformance.yml` green with the shadowsocks oracle test executed against `dovetail-zeronet`
