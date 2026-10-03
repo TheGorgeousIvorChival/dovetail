@@ -134,6 +134,25 @@ mod tests {
     }
 
     #[test]
+    fn replayed_first_group_fails_the_identity_check() {
+        // The historical wrong core forgot the group offset and replayed the first group forever.
+        let key = [0x5au8; 32];
+        let nonce = [0xa7u8; 12];
+        let mut want = vec![0u8; 1024];
+        crate::reference::reference_xor(&key, &nonce, 0, &mut want);
+        let mut got = vec![0u8; 1024];
+        fill_exact(&key, &nonce, 0, &mut got);
+        assert_eq!(got, want, "len 1024 start 0: the real ladder must match");
+        let mut wrong = vec![0u8; 1024];
+        wrong[..512].copy_from_slice(&got[..512]);
+        wrong[512..].copy_from_slice(&got[..512]);
+        assert_ne!(
+            wrong, want,
+            "len 1024 start 0: replaying the first 512 bytes must not match"
+        );
+    }
+
+    #[test]
     fn blocks_for_is_the_ceiling() {
         assert_eq!(blocks_for(65), 2);
         assert_eq!(blocks_for(64), 1);

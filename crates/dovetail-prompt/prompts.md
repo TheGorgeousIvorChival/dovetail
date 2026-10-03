@@ -95,7 +95,7 @@ Write the page under `docs/function/` before the merge, not after: a per-archite
 ## P2 · Run the pinned upstream suites against our binaries in CI
 
 **When to use:** When a compatibility surface is about to be claimed. This is the strongest evidence available and the reason the upstream sources were fetched.
-**Status:** todo
+**Status:** done
 **Leverage:** 5
 **Effort:** large
 **Gates:** CI: `ci.yml` upstream job green on every runner in the matrix; `./scripts/check-upstream-pins.sh`
@@ -217,7 +217,7 @@ Report each finding with the rung, the length band and the input that triggers i
 ## P7 · Adversarial review of the bit-identity claim
 
 **When to use:** Before any release claim, and any time a reviewer asks how the identity check could pass a wrong core — because it has, once, by stopping short of the second group.
-**Status:** todo
+**Status:** done
 **Leverage:** 5
 **Effort:** medium
 **Gates:** `cargo test --workspace --all-features`; `cargo run --release -p dovetail-bench`
