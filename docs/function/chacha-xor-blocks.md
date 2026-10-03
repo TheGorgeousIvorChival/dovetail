@@ -55,7 +55,13 @@ One ChaCha20 chain is a dependent add-xor-rotate chain with nothing to overlap. 
 | portable | 4 (`[u32; 4]`) | 4 | 4 | 16 arrays |
 | NEON (aarch64) | 4 (`uint32x4_t`) | 8 | 8 | 32 `q` registers |
 | SSE2 (x86_64) | 4 (`__m128i`) | 1 | 1 | 4 `xmm` registers |
-| AVX2 (x86_64) | 8 (`__m256i`) | 8 | 8 | 16 `ymm` registers |
+| AVX2 (x86_64) | 8 (`__m256i`) | 4 | 8 | 16 `ymm` registers |
+
+`states in flight` is `NST`, the template parameter of `xor_groups`, and it is the
+same constant on both architectures — four on `x86_64`, eight on `aarch64` —
+while *blocks per iteration* is `NST * CHUNKS`, so `AVX2`'s two chunks per state
+is where its eight come from. `backend()` names the same two numbers and is
+asserted against those constants at compile time, per architecture.
 
 AVX2 gets eight blocks for the same 16 registers by putting **two states in one register** — the low 128 bits are one state's four words, the high 128 bits another's. Every instruction used is per-128-bit-lane: `vpaddd`, `vpxor`, the shift pairs, `vpshufd` and `vpshufb` all operate independently on each half, so the same source drives both states and neither can disturb the other.
 

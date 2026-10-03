@@ -506,7 +506,7 @@ type Wide = portable::U4;
 pub const fn backend() -> &'static str {
     #[cfg(target_arch = "x86_64")]
     {
-        "4-lane core: AVX2, 8 states in flight, 8 blocks per iteration, at runtime-detected width"
+        "4-lane core: AVX2, 4 states in flight, 8 blocks per iteration, at runtime-detected width"
     }
     #[cfg(target_arch = "aarch64")]
     {
@@ -522,13 +522,25 @@ pub const fn backend() -> &'static str {
 ///
 /// A string is the one place a number can go stale without anything noticing:
 /// widening the `aarch64` group left this reporting four blocks per iteration
-/// while the ladder was running eight, which is precisely the sort of unattributable
-/// measurement the whole string exists to prevent. The literals below are
-/// therefore proven against [`GROUP_STATES`], the same way `avx2`'s shuffle
-/// immediates are proven against the formula that is supposed to produce them.
+/// while the ladder was running eight, which is precisely the sort of
+/// unattributable measurement the whole string exists to prevent. The literals
+/// below are therefore proven against [`GROUP_STATES`], the same way `avx2`'s
+/// shuffle immediates are proven against the formula that is supposed to produce
+/// them.
+///
+/// Each arm names the core *that build actually runs*, which is why the `x86_64`
+/// arm names two. `x86_64` picks `AVX2` or the portable core at runtime and has
+/// no `Wide` to name: an earlier version of this asserted against `Wide` under
+/// `#[cfg(target_arch = "x86_64")]`, which does not compile there at all — it was
+/// caught by `test (linux x86_64)` and `test (windows x86_64)` on the pull
+/// request, and by nothing at all on the `aarch64` machine that wrote it. The two
+/// assertions are the two halves of "at runtime-detected width": eight blocks per
+/// iteration on `AVX2`, four on the fallback.
 #[cfg(target_arch = "aarch64")]
 const _: () = assert!(GROUP_STATES * <Wide as Lanes>::CHUNKS == 8);
 #[cfg(target_arch = "x86_64")]
-const _: () = assert!(GROUP_STATES * <Wide as Lanes>::CHUNKS == 8);
+const _: () = assert!(GROUP_STATES * <avx2::A8 as Lanes>::CHUNKS == 8);
+#[cfg(target_arch = "x86_64")]
+const _: () = assert!(GROUP_STATES * <portable::U4 as Lanes>::CHUNKS == 4);
 #[cfg(not(any(target_arch = "x86_64", target_arch = "aarch64")))]
 const _: () = assert!(GROUP_STATES * <Wide as Lanes>::CHUNKS == 4);
