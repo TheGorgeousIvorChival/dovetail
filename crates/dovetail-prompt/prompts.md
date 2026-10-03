@@ -544,7 +544,7 @@ Do not keep both an out-parameter and the formula: two ways of counting blocks i
 ## P19 · Run one upstream suite against a Dovetail binary
 
 **When to use:** Before any rung is called `Implemented`, and before `docs/conformance.md` keeps saying that suites run against these binaries. Today no suite runs a Dovetail binary at all, and the two that could are both blocked on the same missing server.
-**Status:** todo
+**Status:** done
 **Leverage:** 4
 **Effort:** medium
 **Gates:** CI: `conformance.yml` green with a suite that executed a Dovetail binary, and the log line naming the binary and the pin
@@ -630,6 +630,96 @@ Report the match count before and after on this tree. A gate that cannot disting
 ```text
 `ci.yml` lists `pull_request` under its triggers, yet opening PR #1 produced no run at all and the actions API lists no `pull_request` event run, so a branch under review shows no checks. The only evidence a contributor can produce before merge is then a local run, which the shared protocol does not accept as evidence about any runner — and the merge that lands it is unevidenced by construction.
 Make a pull request run CI: find whether the trigger, the repository settings, or the workflow file on the base ref is what swallows the event, fix that one thing, and show a `pull_request` run green on a branch that is not main. Until then every slice's "CI" gate means "CI after landing", and the README's "push, read CI" loop should say so in the same sentence.
+```
+
+## P24 · Trojan protocol rung over raw TCP
+
+**When to use:** When the two trojan oracle failures are the next ones to clear: both expect a `trojan` listener and get exit 1.
+**Status:** todo
+**Leverage:** 4
+**Effort:** medium
+**Gates:** `cargo test --workspace`; CI: `conformance.yml` green with both trojan oracle tests executed against `dovetail-zeronet`
+**Depends on:** P19
+**Touches:** crates/dovetail-zeronet/src/proxy.rs, upstream/pins.toml, docs/conformance.md
+**Random weight:** 2
+
+```text
+Give `dovetail-zeronet` a `trojan` server role and a `trojan` client role over raw `TCP`, following the P19 pattern: read the inbound/outbound pair out of the same config file, relay both directions, close fast on anything else. Then widen the `zeronet` suite filter by exactly the two names that now pass — `trojan_over_raw_tcp_matches_the_oracle` and `trojan_over_websocket_matches_the_oracle` only if the `ws` half passes too, otherwise the raw one alone — and report both directions by name. A subset that passes is a subset; the `ws` half without P27 stays a named failure.
+```
+
+## P25 · VMess protocol rung over raw TCP
+
+**When to use:** When the two vmess oracle failures are the next ones to clear: both expect a `vmess` listener and get exit 1.
+**Status:** todo
+**Leverage:** 4
+**Effort:** large
+**Gates:** `cargo test --workspace`; CI: `conformance.yml` green with both vmess oracle tests executed against `dovetail-zeronet`
+**Depends on:** P19
+**Touches:** crates/dovetail-zeronet/src/proxy.rs, upstream/pins.toml, docs/conformance.md
+**Random weight:** 2
+
+```text
+Give `dovetail-zeronet` a `vmess` server role and a `vmess` client role over raw `TCP`, following the P19 pattern. `VMess` is the heaviest of the three password protocols — timestamps, key derivation, authenticated encryption — so prove the framing against the oracle the same way P19 proved `VLESS`: enable only the names that pass unmodified, `vmess_over_raw_tcp_matches_the_oracle` first, and report the `ws` half as a named failure until P27 lands. Never transliterate: no upstream line enters this tree.
+```
+
+## P26 · Shadowsocks protocol rung over TCP
+
+**When to use:** When the shadowsocks oracle failure is the next one to clear: it expects a `shadowsocks` listener and gets exit 1.
+**Status:** todo
+**Leverage:** 3
+**Effort:** medium
+**Gates:** `cargo test --workspace`; CI: `conformance.yml` green with the shadowsocks oracle test executed against `dovetail-zeronet`
+**Depends on:** P19
+**Touches:** crates/dovetail-zeronet/src/proxy.rs, upstream/pins.toml, docs/conformance.md
+**Random weight:** 2
+
+```text
+Give `dovetail-zeronet` a `shadowsocks` server role and client role for `aes-256-gcm` over `TCP`, following the P19 pattern, then enable exactly `shadowsocks_over_raw_tcp_matches_the_oracle` in the `zeronet` suite filter and report both directions by name. One cipher, one transport, no plugin system: the plugin surface is a different slice and does not ride along here.
+```
+
+## P27 · WebSocket transport for VLESS
+
+**When to use:** When the `vless_over_websocket` oracle failure is the next one to clear: the handshake is closed after the first byte.
+**Status:** todo
+**Leverage:** 4
+**Effort:** medium
+**Gates:** `cargo test --workspace`; CI: `conformance.yml` green with the websocket oracle test executed against `dovetail-zeronet`
+**Depends on:** P19
+**Touches:** crates/dovetail-zeronet/src/proxy.rs, upstream/pins.toml, docs/conformance.md
+**Random weight:** 2
+
+```text
+Teach `dovetail-zeronet` the `ws` carrier for the two roles it already plays: accept the upgrade handshake as a server and perform it as a client, then carry the same `VLESS` bytes inside it. Enable exactly `vless_over_websocket_matches_the_oracle` once both directions pass unmodified and report them by name. Masking, fragmentation and closing belong to this slice; `httpupgrade` and `grpc` do not — they are P28.
+```
+
+## P28 · HTTPUpgrade and gRPC transports for VLESS
+
+**When to use:** When the `httpupgrade` and `grpc` oracle failures are the next ones to clear: one fails the handshake, the other times out on echo.
+**Status:** todo
+**Leverage:** 3
+**Effort:** large
+**Gates:** `cargo test --workspace`; CI: `conformance.yml` green with both oracle tests executed against `dovetail-zeronet`
+**Depends on:** P19
+**Touches:** crates/dovetail-zeronet/src/proxy.rs, upstream/pins.toml, docs/conformance.md
+**Random weight:** 1
+
+```text
+Teach `dovetail-zeronet` the two remaining `HTTP`-family carriers P19 measured failing: `httpupgrade` and `grpc`, each in both server and client roles, following the P27 pattern of carrying unchanged `VLESS` bytes inside the new framing. Enable exactly `vless_over_http_upgrade_matches_the_oracle` and `vless_over_grpc_matches_the_oracle` once each passes unmodified in both directions, and report them by name. `xhttp` is not this slice; it gets its own once these two are green.
+```
+
+## P29 · Wire the xray-rust seam once REALITY dials
+
+**When to use:** When P15's `reality`/`vision` rung carries a record, which is the only thing the `xray-rust` suite exercises that this binary cannot yet do.
+**Status:** todo
+**Leverage:** 3
+**Effort:** medium
+**Gates:** CI: `conformance.yml` green with the seam-injected run against `dovetail-zeronet`, and the log line naming the binary and the pin
+**Depends on:** P15
+**Touches:** upstream/pins.toml, docs/conformance.md
+**Random weight:** 1
+
+```text
+Flip the `xray-rust` pin to `test_enabled = true` with `dovetail_binary = "dovetail-zeronet"` and the suite command its interop tests need, injected via `XRAY_VLESS_FULL_BINARY` — the seam the pinned tree already reads. The binary already answers `run -config`; what was missing was the `REALITY` behavior P15 owns, so this slice contains no transport code, only the flip and the per-test report by name. A subset that passes is a subset.
 ```
 
 ## Reading this file as a roadmap
