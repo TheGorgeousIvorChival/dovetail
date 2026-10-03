@@ -36,7 +36,7 @@ use std::fmt::Write as _;
 ///
 /// Below 257 the claim is every length, so every block-count change there is tested at every byte.
 /// Above 256 the claim is one length either side of each listed multiple, not every multiple in range.
-/// Rung steps are every 64 B, with groups at 256 B (portable/NEON, 4 blocks) and 512 B (AVX2, 8 blocks).
+/// Rung steps are every 64 B, with groups at 256 B (portable, 4 blocks) and 512 B (AVX2 and aarch64 NEON, 8 blocks).
 /// Listed multiples are tail examples 320/384/448/576/640 and group steps 512/768/1024/1536/2048/4096/8192/16384/65536.
 /// Unlisted multiples (704, 896, 1088, 2560, ...) are not covered; exhaustive 0..=65536 would be 786444 shapes, which gate 3 cannot afford.
 /// Offsets 0/1/2/7/64/65535 are a selection (0 is every caller, the rest are resume paths), checked by gate 1, not a proof over u32.
