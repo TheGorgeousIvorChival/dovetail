@@ -18,3 +18,7 @@ workspace = true
 # building against an older core. No Xray-core/sing-box/xray-rust/PattNG/ZeroNet
 # source is copied here; links are parsed by `dovetail_core::vless`.
 dovetail-core = { workspace = true }
+# Portable randomness for `x25519` key generation (no other entropy source).
+getrandom = "0.2"
+# Real X25519 for the `x25519` subcommand the oracle seams call for keys.
+x25519-dalek = "2"
