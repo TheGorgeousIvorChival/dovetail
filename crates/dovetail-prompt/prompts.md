@@ -95,7 +95,7 @@ Write the page under `docs/function/` before the merge, not after: a per-archite
 ## P2 · Run the pinned upstream suites against our binaries in CI
 
 **When to use:** When a compatibility surface is about to be claimed. This is the strongest evidence available and the reason the upstream sources were fetched.
-**Status:** todo
+**Status:** done
 **Leverage:** 5
 **Effort:** large
 **Gates:** CI: `ci.yml` upstream job green on every runner in the matrix; `./scripts/check-upstream-pins.sh`
