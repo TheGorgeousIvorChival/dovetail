@@ -121,5 +121,5 @@ impl Lanes for S4 {
 /// makes for NEON on aarch64.
 #[inline]
 pub(crate) fn xor_block(key: &[u8; 32], nonce: &[u8; 12], start: u32, out: &mut [u8]) -> u32 {
-    super::xor_groups::<S4, 1>(key, nonce, start, out)
+    super::xor_groups::<S4, 1>(&super::base::<S4>(key, nonce), start, out)
 }
