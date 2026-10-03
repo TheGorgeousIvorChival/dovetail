@@ -302,7 +302,7 @@ fn decode_trojan_request(stream: &mut TcpStream, password: &str) -> Option<(u8, 
     }
     let mut crlf = [0u8; 2];
     read_exact(stream, &mut crlf).ok()?;
-    if crlf != [b'\r', b'\n'] {
+    if crlf != *b"\r\n" {
         return None;
     }
     let mut cmd = [0u8; 1];
@@ -311,7 +311,7 @@ fn decode_trojan_request(stream: &mut TcpStream, password: &str) -> Option<(u8, 
     read_exact(stream, &mut port).ok()?;
     let target = read_addr(stream, u16::from_be_bytes(port), 4)?;
     read_exact(stream, &mut crlf).ok()?;
-    if crlf != [b'\r', b'\n'] {
+    if crlf != *b"\r\n" {
         return None;
     }
     Some((cmd[0], target))
@@ -357,12 +357,14 @@ fn push_addr(header: &mut Vec<u8>, target: &SocketAddr, v6: u8) {
     }
 }
 
+/// Hex digits for password hashing.
+const HEX: &[u8; 16] = b"0123456789abcdef";
+
 /// Lowercase hex `SHA224` of a password: the 56-byte `trojan` key.
 fn trojan_key(password: &str) -> [u8; 56] {
     use sha2::Digest as _;
     let digest = sha2::Sha224::digest(password.as_bytes());
     let mut out = [0u8; 56];
-    const HEX: &[u8; 16] = b"0123456789abcdef";
     for (i, byte) in digest.iter().enumerate() {
         out[2 * i] = HEX[(byte >> 4) as usize];
         out[2 * i + 1] = HEX[(byte & 0x0F) as usize];
