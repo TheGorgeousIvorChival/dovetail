@@ -68,7 +68,7 @@ pub(crate) fn serve(mut stream: TcpStream, password: &str, method: &str, freedom
         return;
     }
     trace("relay starts");
-    pump_relay(&uplink, &stream, send, Recv::Ready(recv));
+    pump_relay(&uplink, &stream, send, Recv::Ready(Box::new(recv)));
 }
 
 /// Stderr line when `DOVETAIL_TRACE` is set, silence otherwise.
@@ -92,18 +92,20 @@ pub(crate) fn client_send_handshake(
     let mut salt = [0u8; SALT_LEN];
     getrandom::getrandom(&mut salt).ok()?;
     uplink.write_all(&salt).ok()?;
+    trace("client salt sent");
     let mut send = Cipher::new(&master, &salt)?;
     let mut addr = Vec::with_capacity(20);
     push_addr(&mut addr, target, 4);
     addr.extend_from_slice(&target.port().to_be_bytes());
     seal_all(&mut send, &addr, uplink).ok()?;
+    trace("client addr sent");
     Some((send, Recv::Waiting(master)))
 }
 
 /// Receive cipher: ready, or still waiting on the peer's salt.
 pub(crate) enum Recv {
-    /// Salt read, cipher derived.
-    Ready(Cipher),
+    /// Salt read, cipher derived, boxed like the oracle boxes its schedules.
+    Ready(Box<Cipher>),
     /// Salt unread; derived on the first opened chunk.
     Waiting([u8; 32]),
 }
@@ -128,12 +130,14 @@ pub(crate) fn pump_relay(plain: &TcpStream, sealed: &TcpStream, send: Cipher, re
     let mut plain_write = plain_write;
     let mut send = send;
     let mut recv = match recv {
-        Recv::Ready(cipher) => cipher,
+        Recv::Ready(boxed) => *boxed,
         Recv::Waiting(master) => {
             let mut peer = [0u8; SALT_LEN];
             if read_exact(&mut sealed_read, &mut peer).is_err() {
+                trace("no server salt");
                 return;
             }
+            trace("server salt read");
             let Some(cipher) = Cipher::new(&master, &peer) else {
                 return;
             };
@@ -390,7 +394,7 @@ mod tests {
         };
         seal_all(&mut send, b"ping", &mut uplink).expect("seals");
         let mut recv = match recv {
-            Recv::Ready(cipher) => cipher,
+            Recv::Ready(boxed) => *boxed,
             Recv::Waiting(master) => {
                 let mut peer = [0u8; SALT_LEN];
                 read_exact(&mut uplink, &mut peer).expect("salt");
