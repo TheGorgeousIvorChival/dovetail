@@ -11,6 +11,8 @@ description = "ZeroNet-compatible application built on the released dovetail-cor
 workspace = true
 
 [dependencies]
+# AEAD for the `shadowsocks` chunk transport (`aes-256-gcm` only).
+aes-gcm = "0.10"
 # The ZeroNet app on the *released* core: `version = "0.1.0"` is the requirement
 # (see the workspace `dovetail-core` entry) and `path` is the checkout fallback
 # so this builds without a registry. Releasing `dovetail-core 0.1.0` keeps this
@@ -20,6 +22,12 @@ workspace = true
 dovetail-core = { workspace = true }
 # Portable randomness for `x25519` key generation (no other entropy source).
 getrandom = "0.2"
+# Session subkeys for the `shadowsocks` chunk transport (`ss-subkey` info).
+hkdf = "0.12"
+# Master keys for the `shadowsocks` chunk transport (`EVP_BytesToKey`).
+md5 = "0.7"
+# Hash behind the `shadowsocks` subkey derivation.
+sha1 = "0.10"
 # Password hashing for the `trojan` handshake (`SHA224`, hex).
 sha2 = "0.10"
 # Real X25519 for the `x25519` subcommand the oracle seams call for keys.

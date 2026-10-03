@@ -73,7 +73,7 @@ Verdict vocabulary, and nothing else:
 | "Quiche is the default QUIC" | nothing: `quiche` is in no manifest | **no checker** — a decision rule for a rung that does not exist |
 | every way PattNG can connect parses | `vless::tests::unknown_transports_parse_but_stay_planned`, plus `support()` for the rows the format can express | green for the rows a link can name; the 10-row matrix exists only in a benchmark report |
 | one method dials at a time | `vless::support()` and `dovetail-zeronet run`'s TCP reachability | green |
-| upstream suites run against Dovetail binaries | `conformance.yml` via `run-upstream-suite.sh`: 1 of 7 ran green (`zeronet` raw-`TCP` `VLESS` plus `trojan` vs `dovetail-zeronet` at `97a99734`), 6 skipped | green for the subset — the other seven oracle tests need rungs the binary lacks; the script still refuses a `PASS` naming a binary it did not execute |
+| upstream suites run against Dovetail binaries | `conformance.yml` via `run-upstream-suite.sh`: 1 of 7 ran green (`zeronet` raw-`TCP` `VLESS`, `trojan` and `shadowsocks` vs `dovetail-zeronet` at `97a99734`), 6 skipped | green for the subset — the other six oracle tests need rungs the binary lacks; the script still refuses a `PASS` naming a binary it did not execute |
 | `dovetail-zeronet check` parses offline, `run` dials TCP and sends nothing | the two verbs in `crates/dovetail-zeronet/src/main.rs` | green, by reading; the newer `version`, `x25519` and `run -c` verbs are covered by `proxy::tests` and `json::tests` in the `ci.yml` test matrix |
 | every slice in `prompts.md` carries status, leverage, effort, gates, dependencies | `dovetail-prompt check`, run by `ci.yml` `the prompt library is well formed`, run 37101366003 | green, 0 errors, 29 prompts |
 
@@ -131,7 +131,7 @@ Verdict vocabulary, and nothing else:
 
 | claim | checked by | verdict |
 | --- | --- | --- |
-| "running upstream suites **against Dovetail binaries** in CI" | `zeronet` points its suite at `dovetail-zeronet` via `ZRAY_XRAY_BINARY`; six entries are `test_enabled = false` and skip | green for the 2-test subset — the doc says 1 of 7 suites and names the seven excluded oracle tests with what each got instead of a listener |
+| "running upstream suites **against Dovetail binaries** in CI" | `zeronet` points its suite at `dovetail-zeronet` via `ZRAY_XRAY_BINARY`; six entries are `test_enabled = false` and skip | green for the 3-test subset — the doc says 1 of 7 suites and names the six excluded oracle tests with what each got instead of a listener |
 | `test_enabled = true` means the suite runs on every push | `conformance.yml` → `run-upstream-suite.sh`, run 37101365980: `RUNNING: zeronet …`, then `PASS: zeronet suite green against dovetail-zeronet` | green, and the log line names the binary and the pin |
 | `test_enabled = false` means the job is created, skips, and prints the reason | the same log: six `SKIPPED:` lines, each naming the pin | green |
 | a suite flips to `true` only when the benchmark gate is green on all four ISA runners | `zeronet` is `true` as the P19 differential subset without a benchmark gate behind it | **exception, named** — P19's own gate authorizes the flip and the pin note says so; the general rule still holds for every other entry |

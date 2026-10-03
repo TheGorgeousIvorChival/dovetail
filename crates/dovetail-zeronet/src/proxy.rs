@@ -58,6 +58,18 @@ pub(crate) fn serve_file(path: &str) -> ! {
                     thread::spawn(move || accept_loop(&address_clone, &role));
                     inbounds += 1;
                 }
+                "shadowsocks" => {
+                    let password = inbound_ss_password(inbound);
+                    let method = inbound_method(inbound);
+                    let address_clone = address.clone();
+                    let role = Role::Shadowsocks {
+                        password,
+                        method,
+                        freedom,
+                    };
+                    thread::spawn(move || accept_loop(&address_clone, &role));
+                    inbounds += 1;
+                }
                 "socks" => {
                     let Some(out) = outbound.clone() else {
                         continue;
@@ -91,6 +103,12 @@ enum Role {
     Vless { id: [u8; 16], freedom: bool },
     /// Accept `trojan`, dial the requested target itself.
     Trojan { password: String, freedom: bool },
+    /// Accept `shadowsocks`, dial the requested target itself.
+    Shadowsocks {
+        password: String,
+        method: String,
+        freedom: bool,
+    },
     /// Accept `SOCKS5`, relay through the configured upstream server.
     Socks { out: Outbound },
 }
@@ -102,6 +120,8 @@ enum Outbound {
     Vless(VlessOut),
     /// A `trojan` server and its password.
     Trojan(TrojanOut),
+    /// A `shadowsocks` server, cipher, and password.
+    Shadowsocks(ShadowsocksOut),
 }
 
 /// A `vless` upstream server.
@@ -126,6 +146,19 @@ struct TrojanOut {
     password: String,
 }
 
+/// A `shadowsocks` upstream server.
+#[derive(Debug, Clone)]
+struct ShadowsocksOut {
+    /// Server host as written.
+    address: String,
+    /// Server port.
+    port: u16,
+    /// Cipher name as written.
+    method: String,
+    /// Password as written.
+    password: String,
+}
+
 /// Accept forever, one thread per connection.
 fn accept_loop(address: &str, role: &Role) {
     let listener = TcpListener::bind(address)
@@ -136,6 +169,11 @@ fn accept_loop(address: &str, role: &Role) {
         thread::spawn(move || match role {
             Role::Vless { id, freedom } => serve_vless(stream, &id, freedom),
             Role::Trojan { password, freedom } => serve_trojan(stream, &password, freedom),
+            Role::Shadowsocks {
+                password,
+                method,
+                freedom,
+            } => crate::shadowsocks::serve(stream, &password, &method, freedom),
             Role::Socks { out } => serve_socks(stream, &out),
         });
     }
@@ -180,6 +218,7 @@ fn serve_socks(mut client: TcpStream, out: &Outbound) {
     let (address, port) = match out {
         Outbound::Vless(vless) => (vless.address.clone(), vless.port),
         Outbound::Trojan(trojan) => (trojan.address.clone(), trojan.port),
+        Outbound::Shadowsocks(shadowsocks) => (shadowsocks.address.clone(), shadowsocks.port),
     };
     let dial = format!("{address}:{port}");
     let server = dial.to_socket_addrs().ok().and_then(|mut it| it.next());
@@ -213,6 +252,7 @@ fn serve_socks(mut client: TcpStream, out: &Outbound) {
                     return;
                 }
             }
+            relay(&client, &uplink);
         }
         Outbound::Trojan(trojan) => {
             let mut header = Vec::with_capacity(70);
@@ -225,9 +265,20 @@ fn serve_socks(mut client: TcpStream, out: &Outbound) {
             if uplink.write_all(&header).is_err() {
                 return;
             }
+            relay(&client, &uplink);
+        }
+        Outbound::Shadowsocks(shadowsocks) => {
+            let Some((send, recv)) = crate::shadowsocks::client_send_handshake(
+                &mut uplink,
+                &shadowsocks.password,
+                &shadowsocks.method,
+                &target,
+            ) else {
+                return;
+            };
+            crate::shadowsocks::pump_relay(&client, &uplink, send, recv);
         }
     }
-    relay(&client, &uplink);
 }
 
 /// Copy both directions; each half closes both sockets when its copy ends.
@@ -260,7 +311,7 @@ fn relay(client: &TcpStream, target: &TcpStream) {
 }
 
 /// Read exactly `buf.len()` bytes, one partial read at a time.
-fn read_exact(stream: &mut TcpStream, mut buf: &mut [u8]) -> std::io::Result<()> {
+pub(crate) fn read_exact(stream: &mut dyn Read, mut buf: &mut [u8]) -> std::io::Result<()> {
     while !buf.is_empty() {
         match stream.read(buf) {
             Ok(0) => return Err(std::io::Error::from(std::io::ErrorKind::UnexpectedEof)),
@@ -341,7 +392,7 @@ fn read_addr(stream: &mut TcpStream, port: u16) -> Option<SocketAddr> {
 }
 
 /// Append `atyp` plus address bytes for a socket address; `v6` tags `IPv6`.
-fn push_addr(header: &mut Vec<u8>, target: &SocketAddr, v6: u8) {
+pub(crate) fn push_addr(header: &mut Vec<u8>, target: &SocketAddr, v6: u8) {
     match target.ip() {
         std::net::IpAddr::V4(ip) => {
             header.push(1);
@@ -462,6 +513,26 @@ fn has_protocol(root: &Json, array: &str, protocol: &str) -> bool {
     })
 }
 
+/// First inbound cipher name, empty when unparseable.
+fn inbound_method(inbound: &Json) -> String {
+    inbound
+        .get("settings")
+        .and_then(|s| s.get("method"))
+        .and_then(Json::as_str)
+        .unwrap_or("")
+        .to_owned()
+}
+
+/// Inbound `shadowsocks` password, sitting beside `method`, empty when absent.
+pub(crate) fn inbound_ss_password(inbound: &Json) -> String {
+    inbound
+        .get("settings")
+        .and_then(|s| s.get("password"))
+        .and_then(Json::as_str)
+        .unwrap_or("")
+        .to_owned()
+}
+
 /// First inbound `trojan` client's password, empty when unparseable.
 fn inbound_password(inbound: &Json) -> String {
     inbound
@@ -475,12 +546,15 @@ fn inbound_password(inbound: &Json) -> String {
         .to_owned()
 }
 
-/// First non-`freedom` outbound, `vless` before `trojan`, `None` when neither fits.
+/// First non-`freedom` outbound in `vless`, `trojan`, `shadowsocks` order.
 fn find_outbound(root: &Json) -> Option<Outbound> {
     if let Some(vless) = find_vless_outbound(root) {
         return Some(Outbound::Vless(vless));
     }
-    find_trojan_outbound(root).map(Outbound::Trojan)
+    if let Some(trojan) = find_trojan_outbound(root) {
+        return Some(Outbound::Trojan(trojan));
+    }
+    find_shadowsocks_outbound(root).map(Outbound::Shadowsocks)
 }
 
 /// First `trojan` outbound's server and password, `None` when the shape differs.
@@ -506,6 +580,37 @@ fn find_trojan_outbound(root: &Json) -> Option<TrojanOut> {
         return Some(TrojanOut {
             address,
             port,
+            password,
+        });
+    }
+    None
+}
+
+/// First `shadowsocks` outbound's server, cipher and password, `None` otherwise.
+fn find_shadowsocks_outbound(root: &Json) -> Option<ShadowsocksOut> {
+    let empty = Vec::new();
+    let outbounds = root
+        .get("outbounds")
+        .and_then(Json::as_arr)
+        .unwrap_or(&empty);
+    for outbound in outbounds {
+        if outbound.get("protocol").and_then(Json::as_str) != Some("shadowsocks") {
+            continue;
+        }
+        let server = outbound
+            .get("settings")
+            .and_then(|s| s.get("servers"))
+            .and_then(Json::as_arr)
+            .and_then(|servers| servers.first());
+        let Some(server) = server else { continue };
+        let address = server.get("address").and_then(Json::as_str)?.to_owned();
+        let port = server.get("port").and_then(Json::as_port)?;
+        let method = server.get("method").and_then(Json::as_str)?.to_owned();
+        let password = server.get("password").and_then(Json::as_str)?.to_owned();
+        return Some(ShadowsocksOut {
+            address,
+            port,
+            method,
             password,
         });
     }

@@ -22,6 +22,7 @@
 
 mod json;
 mod proxy;
+mod shadowsocks;
 
 use dovetail_core::transport::Support;
 use std::io::Write as _;
@@ -161,6 +162,26 @@ fn main() {
 
 #[cfg(test)]
 mod tests {
+    /// Server passwords sit beside `method`, not under `clients` like the other
+    /// protocols: reading the wrong nesting derives a wrong subkey silently.
+    #[test]
+    fn shadowsocks_server_password_shape() {
+        let root = crate::json::parse(
+            r#"{"inbounds": [{"protocol": "shadowsocks", "settings": {"method": "aes-256-gcm",
+            "password": "an-example-shared-password"}}]}"#,
+        )
+        .expect("parses");
+        let inbound = &root
+            .get("inbounds")
+            .expect("inbounds")
+            .as_arr()
+            .expect("array")[0];
+        assert_eq!(
+            crate::proxy::inbound_ss_password(inbound),
+            "an-example-shared-password"
+        );
+    }
+
     #[test]
     fn brief_link_checks() {
         let link = dovetail_core::vless::VlessLink::parse(
