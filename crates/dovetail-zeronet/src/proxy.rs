@@ -110,8 +110,8 @@ fn accept_loop(address: &str, role: Role) {
 }
 
 /// Serve one `VLESS`/`TCP` connection: check the user, dial, answer `[0, 0]`, relay.
-fn serve_vless(stream: TcpStream, id: &[u8; 16], freedom: bool) {
-    let Some((got, cmd, target)) = decode_request(&stream) else {
+fn serve_vless(mut stream: TcpStream, id: &[u8; 16], freedom: bool) {
+    let Some((got, cmd, target)) = decode_request(&mut stream) else {
         return;
     };
     if got != *id || cmd != 1 || !freedom {
@@ -120,7 +120,6 @@ fn serve_vless(stream: TcpStream, id: &[u8; 16], freedom: bool) {
     let Ok(uplink) = TcpStream::connect_timeout(&target, Duration::from_secs(8)) else {
         return;
     };
-    let mut stream = stream;
     if stream.write_all(&[0, 0]).is_err() {
         return;
     }
@@ -128,8 +127,8 @@ fn serve_vless(stream: TcpStream, id: &[u8; 16], freedom: bool) {
 }
 
 /// Serve one `SOCKS5` connection by dialing through the `VLESS` server.
-fn serve_socks(client: TcpStream, out: &VlessOut) {
-    let Some(target) = socks_handshake(&client) else {
+fn serve_socks(mut client: TcpStream, out: &VlessOut) {
+    let Some(target) = socks_handshake(&mut client) else {
         return;
     };
     let address = format!("{}:{}", out.address, out.port);
@@ -149,7 +148,7 @@ fn serve_socks(client: TcpStream, out: &VlessOut) {
         return;
     }
     let mut prefix = [0u8; 2];
-    if read_exact(&uplink, &mut prefix).is_err() {
+    if read_exact(&mut uplink, &mut prefix).is_err() {
         return;
     }
     let Ok(consumed) = dovetail_core::vless::VlessLink::decode_response_header(&prefix) else {
@@ -157,7 +156,7 @@ fn serve_socks(client: TcpStream, out: &VlessOut) {
     };
     if consumed > 2 {
         let mut rest = vec![0u8; consumed - 2];
-        if read_exact(&uplink, &mut rest).is_err() {
+        if read_exact(&mut uplink, &mut rest).is_err() {
             return;
         }
     }
@@ -182,12 +181,11 @@ fn relay(client: TcpStream, target: TcpStream) {
 }
 
 /// Read exactly `buf.len()` bytes, one partial read at a time.
-fn read_exact(stream: &TcpStream, mut buf: &mut [u8]) -> std::io::Result<()> {
-    let mut stream = stream;
+fn read_exact(stream: &mut TcpStream, mut buf: &mut [u8]) -> std::io::Result<()> {
     while !buf.is_empty() {
         match stream.read(buf) {
             Ok(0) => return Err(std::io::Error::from(std::io::ErrorKind::UnexpectedEof)),
-            Ok(n) => buf = &mut std::mem::take(&mut buf)[n..],
+            Ok(n) => buf = &mut buf[n..],
             Err(error) => return Err(error),
         }
     }
@@ -195,7 +193,7 @@ fn read_exact(stream: &TcpStream, mut buf: &mut [u8]) -> std::io::Result<()> {
 }
 
 /// Decode a client request header from the stream: `(id, command, target)`.
-fn decode_request(stream: &TcpStream) -> Option<([u8; 16], u8, SocketAddr)> {
+fn decode_request(stream: &mut TcpStream) -> Option<([u8; 16], u8, SocketAddr)> {
     let mut head = [0u8; 18];
     read_exact(stream, &mut head).ok()?;
     if head[0] != 0 {
@@ -217,7 +215,7 @@ fn decode_request(stream: &TcpStream) -> Option<([u8; 16], u8, SocketAddr)> {
 }
 
 /// Read one `atyp` address for a known port.
-fn read_addr(stream: &TcpStream, port: u16) -> Option<SocketAddr> {
+fn read_addr(stream: &mut TcpStream, port: u16) -> Option<SocketAddr> {
     let mut atyp = [0u8; 1];
     read_exact(stream, &mut atyp).ok()?;
     match atyp[0] {
@@ -258,7 +256,7 @@ fn push_addr(header: &mut Vec<u8>, target: &SocketAddr) {
 }
 
 /// Accept a `SOCKS5` `CONNECT`, returning the requested target.
-fn socks_handshake(client: &TcpStream) -> Option<SocketAddr> {
+fn socks_handshake(client: &mut TcpStream) -> Option<SocketAddr> {
     let mut head = [0u8; 2];
     read_exact(client, &mut head).ok()?;
     if head[0] != 5 {
@@ -404,9 +402,8 @@ fn x25519_pair() -> (String, String) {
     private[0] &= 248;
     private[31] &= 127;
     private[31] |= 64;
-    let secret = x25519_dalek::StaticSecret::from(private);
-    let public = x25519_dalek::PublicKey::from(&secret);
-    (b64url(&private), b64url(public.as_bytes()))
+    let public = x25519_dalek::x25519(private, x25519_dalek::X25519_BASEPOINT_BYTES);
+    (b64url(&private), b64url(&public))
 }
 
 /// Unpadded base64url, the encoding the oracle keys arrive in.
@@ -459,8 +456,8 @@ mod tests {
         let listener = TcpListener::bind("127.0.0.1:0").expect("binds");
         let port = listener.local_addr().expect("addr").port();
         let writer = thread::spawn(move || {
-            let (stream, _) = listener.accept().expect("accepts");
-            decode_request(&stream).expect("decodes")
+            let (mut stream, _) = listener.accept().expect("accepts");
+            decode_request(&mut stream).expect("decodes")
         });
         let mut reader = TcpStream::connect(("127.0.0.1", port)).expect("connects");
         reader.write_all(&header).expect("writes");
@@ -479,8 +476,8 @@ mod tests {
         let listener = TcpListener::bind("127.0.0.1:0").expect("binds");
         let port = listener.local_addr().expect("addr").port();
         let writer = thread::spawn(move || {
-            let (stream, _) = listener.accept().expect("accepts");
-            decode_request(&stream)
+            let (mut stream, _) = listener.accept().expect("accepts");
+            decode_request(&mut stream)
         });
         let mut reader = TcpStream::connect(("127.0.0.1", port)).expect("connects");
         reader.write_all(&[1u8; 18]).expect("writes");
