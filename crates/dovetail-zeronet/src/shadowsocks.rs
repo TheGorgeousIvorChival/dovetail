@@ -10,7 +10,6 @@ use std::time::Duration;
 
 use aes_gcm::{aead::AeadInPlace, Aes256Gcm, KeyInit, Nonce};
 use hkdf::Hkdf;
-use md5::{Digest, Md5};
 use sha1::Sha1;
 
 use crate::proxy::{push_addr, read_exact};
@@ -171,10 +170,9 @@ fn master_key(password: &str) -> [u8; 32] {
     let mut out = [0u8; 32];
     let mut previous = Vec::new();
     for slot in out.chunks_mut(16) {
-        let mut hasher = Md5::new();
-        hasher.update(&previous);
-        hasher.update(password.as_bytes());
-        previous = hasher.finalize().to_vec();
+        let mut input = std::mem::take(&mut previous);
+        input.extend_from_slice(password.as_bytes());
+        previous = md5::compute(input).0.to_vec();
         slot.copy_from_slice(&previous);
     }
     out
@@ -196,7 +194,7 @@ fn seal_into(send: &mut Cipher, plain: &[u8], out: &mut dyn Write) -> std::io::R
     let tag = send
         .cipher
         .encrypt_in_place_detached(Nonce::from_slice(&nonce), b"", &mut buf)
-        .map_err(std::io::Error::other)?;
+        .map_err(|_| std::io::Error::from(std::io::ErrorKind::InvalidData))?;
     out.write_all(&buf)?;
     out.write_all(&tag)?;
     Ok(())
