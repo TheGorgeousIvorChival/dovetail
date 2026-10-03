@@ -12,8 +12,8 @@
 # its pin is worse than no checkout.
 #
 # Never copies anything into this repository. The checkouts are reading copies
-# for agents (see P3); suites run from them unmodified, and `upstream/*` stays
-# out of version control — see `.gitignore`.
+# for agents (see `upstream/pins.toml`); suites run from them unmodified, and
+# `upstream/*` stays out of version control — see `.gitignore`.
 set -euo pipefail
 
 cd "$(dirname "$0")/.."

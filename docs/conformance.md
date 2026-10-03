@@ -36,7 +36,7 @@ The honest count is **2 of 12 suites run against a Dovetail binary**, checked by
 | slipstream | `397850b1` | none | client/server CLIs over DNS; no env binary seam |
 | quiche | `3fc9bc1c` | none | library (QUIC + HTTP/3); no suite to inject into — the stack the rungs dial through |
 
-Two of twelve have a seam, and both are the same shape: each spawns the binary as `run -config <file>` and waits for it to listen, so `dovetail-zeronet` needs a **server** role. It has one now — `version`, `x25519`, and `run -c` serving `vless`, `trojan`, `vmess`, `shadowsocks` and `socks` inbounds over raw `TCP`, `ws`, `httpupgrade` and `grpc` (`crates/dovetail-zeronet/src/proxy.rs`). What it does not yet read is `streamSettings.security`, so a `tls` or `reality` inbound is served in the clear: that one missing lookup is why 11 of the 18 failures below are `TLS`/`REALITY` rows.
+Two of twelve have a seam, and both are the same shape: each spawns the binary as `run -config <file>` and waits for it to listen, so `dovetail-zeronet` needs a **server** role. It has one now — `version`, `x25519`, and `run -c` serving `vless`, `trojan`, `vmess`, `shadowsocks` and `socks` inbounds over raw `TCP`, `ws`, `httpupgrade` and `grpc` (`crates/dovetail-zeronet/src/proxy.rs`). It refuses a `tls` or `reality` inbound rather than serving it in the clear (`vless_security_supported` in `crates/dovetail-zeronet/src/proxy.rs`, checked by `vless_security_gate_keeps_plain_and_refuses_reality`), so those inbounds bind nothing and the client sees no listener: that refusal is why 11 of the 18 failures below are `TLS`/`REALITY` rows.
 
 `run-upstream-suite.sh` checks this rather than trusting the pin: it refuses a `PASS` for a suite with no `dovetail_binary`, refuses one whose `seam` is absent, and refuses one whose declared `seam` the pinned tree never reads. Building a binary and not executing it is the failure mode those three checks exist to catch.
 
@@ -63,37 +63,37 @@ The other two `xray_oracle` tests fail against this binary, each measured in `co
 
 `local_xray_interop_tests` at `7a4fb2dd` holds 23 `#[ignore]`d tests; all 23 use the `XRAY_VLESS_FULL_BINARY` seam to run `dovetail-zeronet` as the `VLESS` **server**, and the `Rust` core or the pinned `Xray-core` build as the client. Widening the pin's `suite` to all 23 measured the rest in `conformance.yml` run `37125321800` on `ubuntu-latest`: **5 passed, 18 failed**, 41.6s. The five that pass are the enabled suite command; the eighteen are named here with the assertion each one died on, so the gap is a list rather than a shrug. None of the eighteen was fixed by this slice.
 
-| test | verdict | measured failure | owner |
+| test | verdict | measured failure | lands in |
 | ---- | ------- | ----------------- | ----- |
-| `rust_socks_client_reaches_echo_server_through_local_xray_vless_tcp` | ✅ | — | P19 |
-| `rust_round_robin_balancer_uses_each_local_xray_vless_member` | ✅ | — | P29 |
-| `rust_two_hop_proxy_chain_reaches_echo_through_local_xray_vless_servers` | ✅ | — | P29 |
-| `rust_socks_client_reaches_echo_server_through_local_xray_vless_ws` | ✅ | — | P27 |
-| `rust_socks_client_reaches_echo_server_through_local_xray_vless_httpupgrade` | ✅ | — | P28 |
-| `rust_socks_client_reaches_echo_server_through_local_xray_vless_tls` | ❌ | `socks connect rejected: [5, 1, 0, 1]` | P15 |
-| `rust_socks_client_reaches_echo_server_through_local_xray_vless_tls_vision` | ❌ | `socks connect rejected: [5, 1, 0, 1]` | P15 |
-| `rust_socks_client_reaches_echo_server_through_local_xray_vless_reality_vision` | ❌ | `REALITY server warmup retry failed … [5, 1, 0, 1]` | P15 |
-| `rust_socks_client_reaches_echo_server_through_local_xray_vless_reality_vision_selected_fingerprints` | ❌ | `REALITY server warmup retry failed … [5, 1, 0, 1]` | P15 |
-| `inner_tls_session_survives_vision_direct_switch_through_local_xray_reality_vision` | ❌ | `REALITY server warmup retry failed … [5, 1, 0, 1]` | P15 |
-| `rust_socks_clients_open_parallel_echo_flows_through_local_xray_vless_reality_vision_selected_fingerprints` | ❌ | `REALITY server warmup retry failed … [5, 1, 0, 1]` | P15 |
-| `xray_core_socks_clients_open_parallel_echo_flows_through_local_xray_vless_reality_vision_selected_fingerprints` | ❌ | `Xray-core client REALITY warmup probe failed: … Connection reset by peer` | P15 |
-| `rust_socks_client_reaches_echo_server_through_local_xray_vless_ws_tls` | ❌ | `socks connect timeout: deadline has elapsed` | P15 |
-| `rust_socks_client_reaches_echo_server_through_local_xray_vless_httpupgrade_tls` | ❌ | `socks connect timeout: deadline has elapsed` | P15 |
-| `rust_socks_client_reaches_echo_server_through_local_xray_vless_grpc_tls` | ❌ | `socks connect rejected: [5, 1, 0, 1]` | P15 |
-| `rust_socks_client_reaches_echo_server_through_local_xray_vless_grpc_reality` | ❌ | `REALITY server warmup retry failed … [5, 1, 0, 1]` | P15 |
-| `rust_socks_client_reaches_echo_server_through_local_xray_vless_ws_early_data` | ❌ | `read echo failed: early eof` | P37 |
-| `rust_socks_client_reaches_echo_server_through_local_xray_vless_httpupgrade_early_data` | ❌ | `socks connect rejected: [5, 1, 0, 1]` | P37 |
-| `rust_socks_client_reaches_echo_server_through_local_xray_vless_grpc` | ❌ | `read echo failed: early eof` | P36 |
-| `rust_socks_client_reads_a_server_greeting_through_local_xray_vless_grpc` | ❌ | `read greeting: early eof` | P36 |
-| `rust_socks_client_streams_bulk_echo_through_local_xray_vless_grpc_multi_mode` | ❌ | `bulk echo failed: read bulk echo: Connection reset by peer` | P36 |
-| `rust_socks_client_reaches_echo_server_through_local_xray_vless_xhttp_selected_cases` | ❌ | `XHTTP bulk flow failed: read XHTTP bulk echo: Connection reset by peer` | P38 |
-| `rust_socks_client_reaches_target_through_remote_xhttp_profile` | ❌ | `XRAY_REMOTE_XHTTP_CONFIG must name an owner-only file` | P38 |
+| `rust_socks_client_reaches_echo_server_through_local_xray_vless_tcp` | ✅ | — | `proxy.rs` |
+| `rust_round_robin_balancer_uses_each_local_xray_vless_member` | ✅ | — | P16 |
+| `rust_two_hop_proxy_chain_reaches_echo_through_local_xray_vless_servers` | ✅ | — | P16 |
+| `rust_socks_client_reaches_echo_server_through_local_xray_vless_ws` | ✅ | — | P14 |
+| `rust_socks_client_reaches_echo_server_through_local_xray_vless_httpupgrade` | ✅ | — | P15 |
+| `rust_socks_client_reaches_echo_server_through_local_xray_vless_tls` | ❌ | `socks connect rejected: [5, 1, 0, 1]` | P9 |
+| `rust_socks_client_reaches_echo_server_through_local_xray_vless_tls_vision` | ❌ | `socks connect rejected: [5, 1, 0, 1]` | P9 |
+| `rust_socks_client_reaches_echo_server_through_local_xray_vless_reality_vision` | ❌ | `REALITY server warmup retry failed … [5, 1, 0, 1]` | P9 |
+| `rust_socks_client_reaches_echo_server_through_local_xray_vless_reality_vision_selected_fingerprints` | ❌ | `REALITY server warmup retry failed … [5, 1, 0, 1]` | P9 |
+| `inner_tls_session_survives_vision_direct_switch_through_local_xray_reality_vision` | ❌ | `REALITY server warmup retry failed … [5, 1, 0, 1]` | P9 |
+| `rust_socks_clients_open_parallel_echo_flows_through_local_xray_vless_reality_vision_selected_fingerprints` | ❌ | `REALITY server warmup retry failed … [5, 1, 0, 1]` | P9 |
+| `xray_core_socks_clients_open_parallel_echo_flows_through_local_xray_vless_reality_vision_selected_fingerprints` | ❌ | `Xray-core client REALITY warmup probe failed: … Connection reset by peer` | P9 |
+| `rust_socks_client_reaches_echo_server_through_local_xray_vless_ws_tls` | ❌ | `socks connect timeout: deadline has elapsed` | P9 |
+| `rust_socks_client_reaches_echo_server_through_local_xray_vless_httpupgrade_tls` | ❌ | `socks connect timeout: deadline has elapsed` | P9 |
+| `rust_socks_client_reaches_echo_server_through_local_xray_vless_grpc_tls` | ❌ | `socks connect rejected: [5, 1, 0, 1]` | P9 |
+| `rust_socks_client_reaches_echo_server_through_local_xray_vless_grpc_reality` | ❌ | `REALITY server warmup retry failed … [5, 1, 0, 1]` | P9 |
+| `rust_socks_client_reaches_echo_server_through_local_xray_vless_ws_early_data` | ❌ | `read echo failed: early eof` | P23 |
+| `rust_socks_client_reaches_echo_server_through_local_xray_vless_httpupgrade_early_data` | ❌ | `socks connect rejected: [5, 1, 0, 1]` | P23 |
+| `rust_socks_client_reaches_echo_server_through_local_xray_vless_grpc` | ❌ | `read echo failed: early eof` | P22 |
+| `rust_socks_client_reads_a_server_greeting_through_local_xray_vless_grpc` | ❌ | `read greeting: early eof` | P22 |
+| `rust_socks_client_streams_bulk_echo_through_local_xray_vless_grpc_multi_mode` | ❌ | `bulk echo failed: read bulk echo: Connection reset by peer` | P22 |
+| `rust_socks_client_reaches_echo_server_through_local_xray_vless_xhttp_selected_cases` | ❌ | `XHTTP bulk flow failed: read XHTTP bulk echo: Connection reset by peer` | P24 |
+| `rust_socks_client_reaches_target_through_remote_xhttp_profile` | ❌ | `XRAY_REMOTE_XHTTP_CONFIG must name an owner-only file` | P24 |
 
 Three readings the table supports and a "TLS and `REALITY` are missing" summary does not:
 
-- **`gRPC` passes one oracle and fails the other.** `vless_over_grpc_matches_the_oracle` is green against `ZeroNet`'s `xray_oracle`, and `rust_socks_client_reaches_echo_server_through_local_xray_vless_grpc` fails here with `early eof`. Two oracles, one carrier, two verdicts: the framing agrees with `ZeroNet` and not with `xray-rust`, so the carrier is not wrong, it is narrower than both. P36.
-- **`ws` and `httpupgrade` without `TLS` are green; their early-data rows are not.** No oracle here exercises early data, so P27 and P28 shipped rows no suite tested. P37.
-- **One failure is a harness requirement, not a transport gap.** `rust_socks_client_reaches_target_through_remote_xhttp_profile` asserts before it connects: it wants `XRAY_REMOTE_XHTTP_CONFIG` to name an owner-only file, which the suite command does not and should not write. P38 has to answer that before the row means anything.
+- **`gRPC` passes one oracle and fails the other.** `vless_over_grpc_matches_the_oracle` is green against `ZeroNet`'s `xray_oracle`, and `rust_socks_client_reaches_echo_server_through_local_xray_vless_grpc` fails here with `early eof`. Two oracles, one carrier, two verdicts: the framing agrees with `ZeroNet` and not with `xray-rust`, so the carrier is not wrong, it is narrower than both. P22.
+- **`ws` and `httpupgrade` without `TLS` are green; their early-data rows are not.** No oracle here exercises early data, so P14 and P15 shipped rows no suite tested. P23.
+- **One failure is a harness requirement, not a transport gap.** `rust_socks_client_reaches_target_through_remote_xhttp_profile` asserts before it connects: it wants `XRAY_REMOTE_XHTTP_CONFIG` to name an owner-only file, which the suite command does not and should not write. P24 has to answer that before the row means anything.
 
 ### `--exact` is load-bearing, and CI is what notices
 
