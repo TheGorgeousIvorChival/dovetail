@@ -86,8 +86,18 @@ jobs:
       - run: cargo test --workspace --locked
 
   upstream:
-    name: upstream comparison is current
-    runs-on: ubuntu-latest
+    name: upstream comparison is current (${{ matrix.name }})
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - name: linux x86_64
+            os: ubuntu-latest
+          - name: macos aarch64
+            os: macos-latest
+          - name: windows x86_64
+            os: windows-latest
     steps:
       - uses: actions/checkout@v4
       # The upstream implementations this claims to match are pinned by commit.
@@ -96,6 +106,7 @@ jobs:
       # rejects an unpinned one, rather than skipping it: a check that tolerates
       # the entries it exists to enforce reads as coverage while providing none.
       - name: check the upstream pins resolve
+        shell: bash
         run: ./scripts/check-upstream-pins.sh
 
   prompt-library:
