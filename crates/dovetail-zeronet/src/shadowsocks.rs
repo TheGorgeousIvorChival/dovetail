@@ -43,7 +43,7 @@ pub(crate) fn serve(mut stream: TcpStream, password: &str, method: &str, freedom
     let Some((target, used)) = parse_addr_header(&first) else {
         return;
     };
-    let Ok(uplink) = TcpStream::connect_timeout(&target, Duration::from_secs(8)) else {
+    let Ok(mut uplink) = TcpStream::connect_timeout(&target, Duration::from_secs(8)) else {
         return;
     };
     if uplink.write_all(&first[used..]).is_err() {
