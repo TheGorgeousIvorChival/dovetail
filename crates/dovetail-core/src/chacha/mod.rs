@@ -109,13 +109,30 @@ const CONSTANTS: [u32; 4] = [0x6170_7865, 0x3320_646e, 0x7962_2d32, 0x6b20_6574]
 
 /// States the vector core interleaves per pass.
 ///
-/// Four registers of four states is sixteen `q` or `ymm`: the whole register
-/// file. One more state and the core spills the state to stack on every
-/// instruction of every round, which is the width cliff this constant sits on.
+/// The cliff is the register file, and the register file is not the same size on
+/// both architectures this builds for. Sixteen `ymm` is the whole of `x86_64`'s,
+/// so four states of four registers is the most that fits with nothing spilled:
+/// one more state spills the state to stack on every instruction of every round.
+/// `aarch64` has thirty-two `q` registers, and the same four states were leaving
+/// half of them idle — measured at 1.26 GB/s against 1.85 GB/s on the same
+/// machine with the same sixteen states and the same twenty rounds.
+#[cfg(target_arch = "x86_64")]
+const GROUP_STATES: usize = 4;
+#[cfg(target_arch = "aarch64")]
+const GROUP_STATES: usize = 8;
+#[cfg(not(any(target_arch = "x86_64", target_arch = "aarch64")))]
 const GROUP_STATES: usize = 4;
 
-/// The widest pass the tail can take, which is one state short of a whole group.
-const TAIL_STATES: usize = GROUP_STATES - 1;
+/// The widest pass the tail can take: one state short of a whole group.
+///
+/// Capped at eight so the dispatch in [`xor_tail`] is one fixed list rather than a
+/// list that has to be kept in step with this constant. The clamp here and the
+/// arms there are the two halves of one contract, and a contract written twice
+/// is a contract that can be broken once: a `TAIL_STATES` wider than the widest
+/// arm asks [`xor_groups`] for a pass it never runs, and the bytes of the blocks
+/// nobody generated come back zero — wrong at exactly the lengths where the tail
+/// overshoots, and nowhere else.
+const TAIL_STATES: usize = if GROUP_STATES < 8 { GROUP_STATES } else { 8 } - 1;
 
 /// The 16-word state for `key` and `nonce`, with the counter left at zero.
 #[inline]
@@ -133,6 +150,61 @@ fn base_state(key: &[u8; 32], nonce: &[u8; 12]) -> [u32; 16] {
         );
     }
     s
+}
+
+/// The part of a state that every block in a call shares.
+///
+/// Words 0..12 of the state are identical in every block; only word 12, the
+/// counter, moves. Holding the shared part in registers for the whole call —
+/// rather than rebuilding it per pass and keeping a full second copy of the
+/// initial state alive for the feed-forward — is what stops the rounds from
+/// competing with their own inputs for registers. The copy cost sixteen
+/// registers on aarch64 and thirty-two on `x86_64`, which is the whole file.
+#[derive(Clone, Copy)]
+pub(crate) struct Base<V> {
+    /// Words 0..3, 4..7 and 8..11, each broadcast into every chunk of a vector.
+    regs: [V; 3],
+    /// Words 13..16: the nonce tail, which follows the counter in every block.
+    tail: [u32; 3],
+}
+
+/// Build [`Base`] once per call rather than once per pass.
+///
+/// The key and the nonce are the same for every block the call produces, so
+/// parsing them per group is the same thirty-two key loads and twelve nonce
+/// loads per 512 bytes of keystream, every one of them discarded at the end of
+/// the pass.
+#[inline]
+fn base<V: Lanes>(key: &[u8; 32], nonce: &[u8; 12]) -> Base<V> {
+    let state = base_state(key, nonce);
+    let mut lanes = [0u32; 16];
+    let regs = core::array::from_fn(|g| {
+        for c in 0..V::CHUNKS {
+            lanes[4 * c..4 * c + 4].copy_from_slice(&state[4 * g..4 * g + 4]);
+        }
+        V::from_lanes(&lanes[..V::LANES])
+    });
+    Base {
+        regs,
+        tail: [state[13], state[14], state[15]],
+    }
+}
+
+/// Word 12 of every chunk is the block counter; words 13..15 are the nonce tail.
+///
+/// Built where it is needed and dropped again, which is cheaper than keeping it
+/// live across the rounds: a handful of scalar inserts against a register held
+/// for the whole pass.
+#[inline(always)]
+fn counter<V: Lanes>(base: &Base<V>, start: u32, s: usize) -> V {
+    let mut lanes = [0u32; 16];
+    for c in 0..V::CHUNKS {
+        lanes[4 * c] = start.wrapping_add((s * V::CHUNKS + c) as u32);
+        lanes[4 * c + 1] = base.tail[0];
+        lanes[4 * c + 2] = base.tail[1];
+        lanes[4 * c + 3] = base.tail[2];
+    }
+    V::from_lanes(&lanes[..V::LANES])
 }
 
 /// Eight quarter-round steps over the four registers of one state.
@@ -167,19 +239,29 @@ fn quarter_round<V: Lanes>(r: &mut [V; 4]) {
 /// Ten double rounds over `NST` interleaved states, with the register rotation
 /// that turns the row round into the diagonal round and back.
 ///
-/// One loop per half-round rather than four: each state is independent, so
-/// running a state's quarter-round and its shuffle together is the same bytes as
-/// running all quarter-rounds then all shuffles, with a quarter of the passes over
-/// `regs` (10 instead of 40 per group) and the state hot in cache.
+/// Each phase is a separate pass over `regs` rather than one interleaved pass,
+/// and the phases are different kinds of instruction: a quarter-round is adds,
+/// xors and shifts, and a shuffle is a lane permutation. Interleaved, every
+/// state alternates between the two, so the machine's issue ports alternate too
+/// and each phase waits on the other's latency; phased, a whole group's adds and
+/// xors are one run and its permutations are another. Same bytes, same order of
+/// operations — every state is independent, so a quarter-round and a shuffle
+/// commute across states — and a quarter of the passes over `regs` besides.
 #[inline(always)]
 fn rounds<V: Lanes, const NST: usize>(regs: &mut [[V; 4]; NST]) {
     for _ in 0..10 {
         for s in regs.iter_mut() {
             quarter_round(s);
+        }
+        for s in regs.iter_mut() {
             s[1] = s[1].rot_chunks(1);
             s[2] = s[2].rot_chunks(2);
             s[3] = s[3].rot_chunks(3);
+        }
+        for s in regs.iter_mut() {
             quarter_round(s);
+        }
+        for s in regs.iter_mut() {
             s[1] = s[1].rot_chunks(3);
             s[2] = s[2].rot_chunks(2);
             s[3] = s[3].rot_chunks(1);
@@ -204,76 +286,77 @@ fn rounds<V: Lanes, const NST: usize>(regs: &mut [[V; 4]; NST]) {
 /// past the end is an index panic rather than a silent overrun.
 #[inline(always)]
 pub(crate) fn xor_groups<V: Lanes, const NST: usize>(
-    key: &[u8; 32],
-    nonce: &[u8; 12],
+    base: &Base<V>,
     start: u32,
     out: &mut [u8],
 ) -> u32 {
     // `NST * CHUNKS` blocks of 64 bytes, and `CHUNKS = LANES / 4`.
     debug_assert!(out.len() <= NST * V::LANES * 16);
 
-    let state = base_state(key, nonce);
-
-    // Built directly: every register is produced once below before use, so starting
-    // from a zero array would be `NST * 4` dead vector constructions per group.
-    // `from_fn` constructs each register once — same bytes, no dead stores. The
-    // initial values are kept because ChaCha20's feed-forward adds them back
-    // word for word; recomputing them would mean re-reading the key per block.
+    // Built directly rather than from a zero array: every register is produced
+    // once here, so starting from zeros would be `NST * 4` dead vector
+    // constructions per group. The three shared registers hold the *same* value
+    // in every state, so they are copied rather than rebuilt.
     let mut regs: [[V; 4]; NST] = core::array::from_fn(|s| {
-        core::array::from_fn(|g| {
-            let mut lanes = [0u32; 16];
-            if g < 3 {
-                for c in 0..V::CHUNKS {
-                    lanes[4 * c..4 * c + 4].copy_from_slice(&state[4 * g..4 * g + 4]);
-                }
-            } else {
-                // Register 3 is the only one whose words differ per block: word 12
-                // is the counter, and words 13..15 are the nonce.
-                for c in 0..V::CHUNKS {
-                    let block = (s * V::CHUNKS + c) as u32;
-                    lanes[4 * c] = start.wrapping_add(block);
-                    lanes[4 * c + 1] = state[13];
-                    lanes[4 * c + 2] = state[14];
-                    lanes[4 * c + 3] = state[15];
-                }
-            }
-            V::from_lanes(&lanes[..V::LANES])
-        })
+        [
+            base.regs[0],
+            base.regs[1],
+            base.regs[2],
+            counter(base, start, s),
+        ]
     });
-    let init = regs;
 
     rounds::<V, NST>(&mut regs);
 
-    // Feed-forward fused into the store: `reg[g].add(init)` is lane-wise pure,
-    // so `add-then-store` and `store(add(...))` are the same bytes. Doing it
-    // here removes a whole pass over `regs` (NST*4 vector stores + loads) with
-    // no change in output. The loop is group-major (`s`, then `c`) rather than
-    // block-major, so `group = block / CHUNKS` and `c = block % CHUNKS` are
-    // never computed: `s` *is* the group and `c` *is* the lane. Same stores,
-    // no division.
+    // Feed-forward fused into the store: `reg[g].add(initial[g])` is lane-wise
+    // pure, so `add-then-store` and `store(add(...))` are the same bytes. Doing
+    // it here removes a whole pass over `regs` with no change in output.
     //
-    // The store is sixteen bytes at a time, which is what the lane load needs,
-    // and the one sub-chunk a partial last block leaves behind is staged through
-    // a 16-byte scratch so the bytes that exist are written without writing past
-    // them. That happens at most once per call and never at all for a whole group.
-    let (slots, partial) = out.as_chunks_mut::<16>();
+    // The loop is group-major (`s`, then `c`) rather than block-major, so
+    // `group = block / CHUNKS` and `c = block % CHUNKS` are never computed: `s`
+    // *is* the group and `c` *is* the lane. Same stores, no division.
+    //
+    // The store walks whole 64-byte blocks — four 16-byte chunks of a register,
+    // which is what the lane load needs — so the test "is this block inside
+    // `out`" is made once per 64 bytes rather than once per 16. The bytes that
+    // do not fill a whole block are staged exactly as before, so a short `out`
+    // still never has a byte written past its end.
+    let (blocks, partial) = out.as_chunks_mut::<64>();
     let mut i = 0usize;
-    'stores: for s in 0..NST {
+    'stores: for (s, state) in regs.iter_mut().enumerate() {
+        // Rebuilt here rather than kept: four registers live at the store, not
+        // `NST * 4` live across the rounds.
+        let ff = [
+            base.regs[0],
+            base.regs[1],
+            base.regs[2],
+            counter(base, start, s),
+        ];
         for c in 0..V::CHUNKS {
-            for g in 0..4 {
-                let mixed = regs[s][g].add(init[s][g]);
-                if let Some(slot) = slots.get_mut(i) {
-                    mixed.xor_chunk(c, slot);
-                    i += 1;
-                } else {
+            let Some(block) = blocks.get_mut(i) else {
+                // `out` is no longer than a whole group, so at most one block per
+                // call is partial: this runs once and then stops.
+                let (chunks, tail) = partial.as_chunks_mut::<16>();
+                for (chunk, (reg, initial)) in
+                    chunks.iter_mut().zip(state.iter_mut().zip(ff.iter()))
+                {
+                    reg.add(*initial).xor_chunk(c, chunk);
+                }
+                if !tail.is_empty() {
                     let mut staged = [0u8; 16];
-                    mixed.xor_chunk(c, &mut staged);
-                    for (dst, ks) in partial.iter_mut().zip(staged) {
+                    let g = chunks.len();
+                    state[g].add(ff[g]).xor_chunk(c, &mut staged);
+                    for (dst, ks) in tail.iter_mut().zip(staged) {
                         *dst ^= ks;
                     }
-                    break 'stores;
                 }
+                break 'stores;
+            };
+            let (chunks, _) = block.as_chunks_mut::<16>();
+            for (chunk, (reg, initial)) in chunks.iter_mut().zip(state.iter_mut().zip(ff.iter())) {
+                reg.add(*initial).xor_chunk(c, chunk);
             }
+            i += 1;
         }
     }
     (NST * V::CHUNKS) as u32
@@ -298,18 +381,31 @@ const fn group_bytes<V: Lanes>() -> usize {
 /// Returns what the passes reported, which is the same number the counter advanced
 /// by: the report and the advance are one value read twice, so they cannot drift.
 #[inline(always)]
-fn xor_tail<V: Lanes>(key: &[u8; 32], nonce: &[u8; 12], start: u32, buf: &mut [u8]) -> u32 {
+fn xor_tail<V: Lanes>(
+    key: &[u8; 32],
+    nonce: &[u8; 12],
+    base: &Base<V>,
+    start: u32,
+    buf: &mut [u8],
+) -> u32 {
     let mut ctr = start;
     let mut rest = buf;
     let mut blocks = 0u32;
     while rest.len() > 64 {
         let states = (rest.len().div_ceil(64) / V::CHUNKS).clamp(1, TAIL_STATES);
         let (head, tail) = rest.split_at_mut((states * V::CHUNKS * 64).min(rest.len()));
-        blocks += match states {
-            1 => xor_groups::<V, 1>(key, nonce, ctr, head),
-            2 => xor_groups::<V, 2>(key, nonce, ctr, head),
-            _ => xor_groups::<V, 3>(key, nonce, ctr, head),
-        };
+        // One arm per width, up to the cap `TAIL_STATES` clamps to. Written as a
+        // list rather than a `_ =>` catch-all so a width with no arm is a
+        // compile-time hole rather than a silently unwritten tail.
+        macro_rules! pass {
+            ($($n:literal),+ $(,)?) => {
+                match states {
+                    $($n => xor_groups::<V, $n>(base, ctr, head),)+
+                    _ => unreachable!("`states` is clamped to TAIL_STATES"),
+                }
+            };
+        }
+        blocks += pass!(1, 2, 3, 4, 5, 6, 7);
         ctr = ctr.wrapping_add((states * V::CHUNKS) as u32);
         rest = tail;
     }
@@ -380,6 +476,8 @@ pub(crate) fn xor_blocks(key: &[u8; 32], nonce: &[u8; 12], start: u32, buf: &mut
 /// reachable at all: they are only sound in code built with the feature on.
 #[inline(always)]
 fn xor_ladder<V: Lanes>(key: &[u8; 32], nonce: &[u8; 12], start: u32, buf: &mut [u8]) -> u32 {
+    // Once for the whole call, not once per pass.
+    let base = base::<V>(key, nonce);
     let mut ctr = start;
     let mut rest = buf;
     let mut blocks = 0u32;
@@ -387,11 +485,11 @@ fn xor_ladder<V: Lanes>(key: &[u8; 32], nonce: &[u8; 12], start: u32, buf: &mut 
         // The length is exactly one group by the loop condition, so the split
         // cannot fail and cannot be short.
         let (head, tail) = rest.split_at_mut(group_bytes::<V>());
-        blocks += xor_groups::<V, GROUP_STATES>(key, nonce, ctr, head);
+        blocks += xor_groups::<V, GROUP_STATES>(&base, ctr, head);
         ctr = ctr.wrapping_add((GROUP_STATES * V::CHUNKS) as u32);
         rest = tail;
     }
-    blocks + xor_tail::<V>(key, nonce, ctr, rest)
+    blocks + xor_tail::<V>(key, nonce, &base, ctr, rest)
 }
 
 /// The vector core this build dispatches to for the tail, named once so the
@@ -408,14 +506,41 @@ type Wide = portable::U4;
 pub const fn backend() -> &'static str {
     #[cfg(target_arch = "x86_64")]
     {
-        "4-lane core: AVX2, 8 blocks per iteration, at runtime-detected width"
+        "4-lane core: AVX2, 4 states in flight, 8 blocks per iteration, at runtime-detected width"
     }
     #[cfg(target_arch = "aarch64")]
     {
-        "4-lane core: NEON, 4 blocks per iteration"
+        "4-lane core: NEON, 8 states in flight, 8 blocks per iteration"
     }
     #[cfg(not(any(target_arch = "x86_64", target_arch = "aarch64")))]
     {
-        "4-lane core: portable, 4 blocks per iteration"
+        "4-lane core: portable, 4 states in flight, 4 blocks per iteration"
     }
 }
+
+/// The number `backend()` names, checked against the constant that produces it.
+///
+/// A string is the one place a number can go stale without anything noticing:
+/// widening the `aarch64` group left this reporting four blocks per iteration
+/// while the ladder was running eight, which is precisely the sort of
+/// unattributable measurement the whole string exists to prevent. The literals
+/// below are therefore proven against [`GROUP_STATES`], the same way `avx2`'s
+/// shuffle immediates are proven against the formula that is supposed to produce
+/// them.
+///
+/// Each arm names the core *that build actually runs*, which is why the `x86_64`
+/// arm names two. `x86_64` picks `AVX2` or the portable core at runtime and has
+/// no `Wide` to name: an earlier version of this asserted against `Wide` under
+/// `#[cfg(target_arch = "x86_64")]`, which does not compile there at all — it was
+/// caught by `test (linux x86_64)` and `test (windows x86_64)` on the pull
+/// request, and by nothing at all on the `aarch64` machine that wrote it. The two
+/// assertions are the two halves of "at runtime-detected width": eight blocks per
+/// iteration on `AVX2`, four on the fallback.
+#[cfg(target_arch = "aarch64")]
+const _: () = assert!(GROUP_STATES * <Wide as Lanes>::CHUNKS == 8);
+#[cfg(target_arch = "x86_64")]
+const _: () = assert!(GROUP_STATES * <avx2::A8 as Lanes>::CHUNKS == 8);
+#[cfg(target_arch = "x86_64")]
+const _: () = assert!(GROUP_STATES * <portable::U4 as Lanes>::CHUNKS == 4);
+#[cfg(not(any(target_arch = "x86_64", target_arch = "aarch64")))]
+const _: () = assert!(GROUP_STATES * <Wide as Lanes>::CHUNKS == 4);

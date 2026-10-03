@@ -1,4 +1,4 @@
-//! The NEON backend: four 128-bit words per register, four states in flight.
+//! The NEON backend: four 128-bit words per register, eight states in flight.
 //!
 //! NEON is part of the aarch64 baseline — it is not an optional extension — so
 //! there is no runtime check here and none is needed. The layout and the rotate
