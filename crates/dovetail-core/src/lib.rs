@@ -33,9 +33,11 @@
 
 #![deny(missing_debug_implementations)]
 
+pub mod aead;
 pub(crate) mod chacha;
 pub mod core;
 pub mod policy;
+pub mod poly1305;
 pub mod record;
 pub mod tls;
 pub mod transport;
