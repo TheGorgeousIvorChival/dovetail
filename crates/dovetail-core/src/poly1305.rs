@@ -24,6 +24,29 @@
 //! block, which is why the limb width is 26 and not 13: a wider limb means fewer
 //! limbs means fewer folds.
 //!
+//! # What was tried and measured against this
+//!
+//! Two changes that a careful reader would suggest, both measured on an `M2`
+//! and both *not* here, so that they do not get proposed again:
+//!
+//! * **Fusing the two halves of the `AEAD`** — xoring each chunk of keystream
+//!   and absorbing that chunk's ciphertext in one loop, so the two dependency
+//!   chains sit in the reorder window together. The chains are independent, so
+//!   this ought to turn the sum of the two halves into the larger of them. It
+//!   does not: it is 20% *slower* at 256-byte chunks and no different at 512.
+//!   Each chunk is a real call into `record::fill_exact`, and the two halves do
+//!   not co-issue across it.
+//! * **Pairing the five products of each accumulator into a tree** instead of
+//!   summing them left to right, to shorten the dependency chain of the
+//!   multiply-adds. No measurable difference; the scheduler was already doing
+//!   as well as the tree allows.
+//!
+//! What is left is the loop: twenty-five products, a fourteen-operation fold and
+//! a fourteen-operation block decode, in fifty-seven instructions, with the
+//! accumulator in registers across the whole message. Going below that means
+//! `NEON`, and the twenty-five products are arranged so that four-wide lanes do
+//! not fold into them the way they do for the `ChaCha20` core.
+//!
 //! # What is not claimed
 //!
 //! That this is faster than every other `Poly1305`. It is faster than the one
