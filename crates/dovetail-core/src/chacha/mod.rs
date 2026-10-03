@@ -239,19 +239,29 @@ fn quarter_round<V: Lanes>(r: &mut [V; 4]) {
 /// Ten double rounds over `NST` interleaved states, with the register rotation
 /// that turns the row round into the diagonal round and back.
 ///
-/// One loop per half-round rather than four: each state is independent, so
-/// running a state's quarter-round and its shuffle together is the same bytes as
-/// running all quarter-rounds then all shuffles, with a quarter of the passes over
-/// `regs` (10 instead of 40 per group) and the state hot in cache.
+/// Each phase is a separate pass over `regs` rather than one interleaved pass,
+/// and the phases are different kinds of instruction: a quarter-round is adds,
+/// xors and shifts, and a shuffle is a lane permutation. Interleaved, every
+/// state alternates between the two, so the machine's issue ports alternate too
+/// and each phase waits on the other's latency; phased, a whole group's adds and
+/// xors are one run and its permutations are another. Same bytes, same order of
+/// operations — every state is independent, so a quarter-round and a shuffle
+/// commute across states — and a quarter of the passes over `regs` besides.
 #[inline(always)]
 fn rounds<V: Lanes, const NST: usize>(regs: &mut [[V; 4]; NST]) {
     for _ in 0..10 {
         for s in regs.iter_mut() {
             quarter_round(s);
+        }
+        for s in regs.iter_mut() {
             s[1] = s[1].rot_chunks(1);
             s[2] = s[2].rot_chunks(2);
             s[3] = s[3].rot_chunks(3);
+        }
+        for s in regs.iter_mut() {
             quarter_round(s);
+        }
+        for s in regs.iter_mut() {
             s[1] = s[1].rot_chunks(3);
             s[2] = s[2].rot_chunks(2);
             s[3] = s[3].rot_chunks(1);
@@ -287,8 +297,14 @@ pub(crate) fn xor_groups<V: Lanes, const NST: usize>(
     // once here, so starting from zeros would be `NST * 4` dead vector
     // constructions per group. The three shared registers hold the *same* value
     // in every state, so they are copied rather than rebuilt.
-    let mut regs: [[V; 4]; NST] =
-        core::array::from_fn(|s| [base.regs[0], base.regs[1], base.regs[2], counter(base, start, s)]);
+    let mut regs: [[V; 4]; NST] = core::array::from_fn(|s| {
+        [
+            base.regs[0],
+            base.regs[1],
+            base.regs[2],
+            counter(base, start, s),
+        ]
+    });
 
     rounds::<V, NST>(&mut regs);
 
@@ -307,7 +323,7 @@ pub(crate) fn xor_groups<V: Lanes, const NST: usize>(
     // still never has a byte written past its end.
     let (blocks, partial) = out.as_chunks_mut::<64>();
     let mut i = 0usize;
-    'stores: for s in 0..NST {
+    'stores: for (s, state) in regs.iter_mut().enumerate() {
         // Rebuilt here rather than kept: four registers live at the store, not
         // `NST * 4` live across the rounds.
         let ff = [
@@ -321,13 +337,15 @@ pub(crate) fn xor_groups<V: Lanes, const NST: usize>(
                 // `out` is no longer than a whole group, so at most one block per
                 // call is partial: this runs once and then stops.
                 let (chunks, tail) = partial.as_chunks_mut::<16>();
-                for (g, chunk) in chunks.iter_mut().enumerate() {
-                    regs[s][g].add(ff[g]).xor_chunk(c, chunk);
+                for (chunk, (reg, initial)) in
+                    chunks.iter_mut().zip(state.iter_mut().zip(ff.iter()))
+                {
+                    reg.add(*initial).xor_chunk(c, chunk);
                 }
                 if !tail.is_empty() {
                     let mut staged = [0u8; 16];
                     let g = chunks.len();
-                    regs[s][g].add(ff[g]).xor_chunk(c, &mut staged);
+                    state[g].add(ff[g]).xor_chunk(c, &mut staged);
                     for (dst, ks) in tail.iter_mut().zip(staged) {
                         *dst ^= ks;
                     }
@@ -335,8 +353,8 @@ pub(crate) fn xor_groups<V: Lanes, const NST: usize>(
                 break 'stores;
             };
             let (chunks, _) = block.as_chunks_mut::<16>();
-            for (g, chunk) in chunks.iter_mut().enumerate() {
-                regs[s][g].add(ff[g]).xor_chunk(c, chunk);
+            for (chunk, (reg, initial)) in chunks.iter_mut().zip(state.iter_mut().zip(ff.iter())) {
+                reg.add(*initial).xor_chunk(c, chunk);
             }
             i += 1;
         }
