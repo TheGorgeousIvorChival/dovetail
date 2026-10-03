@@ -496,7 +496,11 @@ impl VisionOpen {
     /// Strip one call's framing: UUID once, command blocks, padding skipped.
     ///
     /// Returns content bytes written and the last completed command, if any.
-    /// `out` must hold `buf` (content never exceeds input); panics when short.
+    /// `out` must hold `buf` (content never exceeds input).
+    ///
+    /// # Panics
+    ///
+    /// If `out` is shorter than `buf`, rather than truncating a record.
     pub fn open(&mut self, buf: &[u8], out: &mut [u8]) -> (usize, Option<VisionCommand>) {
         assert!(out.len() >= buf.len(), "vision open buffer too short");
         let mut pos = 0;
@@ -531,11 +535,11 @@ impl VisionOpen {
                 out[written..written + n].copy_from_slice(&buf[pos..pos + n]);
                 written += n;
                 pos += n;
-                self.content -= n as i32;
+                self.content -= i32::try_from(n).expect("record chunk fits i32");
             } else {
                 let n = (self.padding as usize).min(buf.len() - pos);
                 pos += n;
-                self.padding -= n as i32;
+                self.padding -= i32::try_from(n).expect("record chunk fits i32");
             }
             if self.command <= 0 && self.content <= 0 && self.padding <= 0 {
                 if self.current == 0 {
@@ -546,7 +550,6 @@ impl VisionOpen {
                     self.padding = -1;
                     out[written..written + buf.len() - pos].copy_from_slice(&buf[pos..]);
                     written += buf.len() - pos;
-                    pos = buf.len();
                     break;
                 }
             }
