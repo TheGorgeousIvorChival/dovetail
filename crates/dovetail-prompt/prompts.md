@@ -355,7 +355,7 @@ Run the port beside the original until parity holds for three consecutive green 
 ## P12 · Repair the pin `path` fields that name nothing at their own rev
 
 **When to use:** Before any slice that reads a pinned source starts, because the `path` is the field that says which tree backs the note next to it, and four of the seven currently point at a directory that is not there.
-**Status:** todo
+**Status:** done
 **Leverage:** 3
 **Effort:** small
 **Gates:** `./scripts/check-upstream-pins.sh`; CI: `ci.yml` upstream job
