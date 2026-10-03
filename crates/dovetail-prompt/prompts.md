@@ -635,7 +635,7 @@ Make a pull request run CI: find whether the trigger, the repository settings, o
 ## P24 · Trojan protocol rung over raw TCP
 
 **When to use:** When the two trojan oracle failures are the next ones to clear: both expect a `trojan` listener and get exit 1.
-**Status:** todo
+**Status:** done
 **Leverage:** 4
 **Effort:** medium
 **Gates:** `cargo test --workspace`; CI: `conformance.yml` green with both trojan oracle tests executed against `dovetail-zeronet`
