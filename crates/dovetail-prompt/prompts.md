@@ -563,6 +563,36 @@ The second row is a different kind of problem and must be settled before the fir
 Read `upstream/xray-core/transport/internet/splithttp/` and `upstream/xray-rust/crates/xray-transport/src/stream/xhttp/`, then `upstream/zeronet/crates/zero-transport/src/xhttp.rs` and `xhttp_request.rs`, and implement the narrowest form that carries one `VLESS` request and one response. `xhttp` moves the payload across several HTTP requests with padding and placement rules per mode; a slice that implements one mode and names it is further along than a slice that stubs the carrier and reports the row green.
 ```
 
+## P25 · Serve the `tls` rows with a rustls server role
+
+**When to use:** When `rust_socks_client_reaches_echo_server_through_local_xray_vless_tls` is the next red row to clear: the test builds a real Xray Go server today and swaps in this binary via `XRAY_VLESS_FULL_BINARY`, and this binary binds nothing because `serve_file` refuses every `tls` inbound rather than serving it in the clear.
+**Status:** todo
+**Leverage:** 4
+**Effort:** large
+**Gates:** `cargo test --workspace`; CI: `conformance.yml` green with `rust_socks_client_reaches_echo_server_through_local_xray_vless_tls` added `--exact` to the enabled `xray-rust` suite command and executed unmodified
+**Depends on:** P9
+**Touches:** crates/dovetail-zeronet/src/proxy.rs, crates/dovetail-core/src/tls/mod.rs, crates/dovetail-core/src/tls/rustls_backend.rs, upstream/pins.toml, docs/conformance.md
+**Random weight:** 1
+
+```text
+Read the `certificateFile`/`keyFile` pair out of `streamSettings.tlsSettings.certificates` and serve `TLS` inside this binary through the existing `TlsProvider` interface, which today only opens client sessions: the test writes a self-signed pair per run and pins it on its own side, so there is no test CA to vendor and no fingerprint to mimic. `VLESS` decode and relay inside the session stay exactly what the raw-`TCP` path does; only the outer layer changes, which is why this slice flips one row and names it rather than claiming the carriers. The `ws_tls`, `httpupgrade_tls` and `grpc_tls` rows keep their `TLS` inside carriers this binary already frames, so each joins the suite command only with its own passing run, never batched onto this one.
+```
+
+## P26 · Serve the `REALITY` rows with a uTLS-parity handshake
+
+**When to use:** When the seven `reality`/`vision` rows are all that is red in the `xray-rust` table and `P25` is green: the client opens with a fingerprinted `ClientHello`, authenticates by `shortId` against an `X25519` key, and expects `TLS`-shaped records after, none of which the `rustls` server role from `P25` produces on its own.
+**Status:** todo
+**Leverage:** 4
+**Effort:** large
+**Gates:** `cargo test --workspace`; CI: `conformance.yml` green with the seven `reality`/`vision` rows added `--exact` to the enabled `xray-rust` suite command and executed unmodified
+**Depends on:** P25
+**Touches:** crates/dovetail-zeronet/src/proxy.rs, crates/dovetail-core/src/tls/mod.rs, crates/dovetail-core/src/tls/rustls_backend.rs, upstream/pins.toml, docs/conformance.md
+**Random weight:** 1
+
+```text
+Read `upstream/xray-core/transport/internet/reality/reality.go` for the exchange this has to match — ephemeral `X25519` against `realitySettings.privateKey`, `shortIds` authentication, session tickets — then `upstream/xray-rust/crates/xray-transport/tests/reality_rustls_tests.rs` and `utls_tls_shaping_tests.rs` for the exact shaping the tests assert, and write the smaller handshake that is byte-identical on the wire and carries no copied lines. `dest` fallback and `show` output stay out; a server that answers `REALITY` for its own `shortId` set and closes everything else is further along than one that dials out to check. The `vision` padding commands ride inside the session exactly as `Xray-core`'s `VisionReader`/`VisionWriter` frame them, which is a second framing to prove, not a flag to set.
+```
+
 ## Reading this file as a roadmap
 
 The graph is the point, and it is not a decoration: `dovetail-prompt next` ranks ready slices by leverage, breaks ties towards the smaller one, leaves out the ones waiting on a decision, and reports what each slice unblocks. `P15` is ahead of everything because three of the remaining slices wait on it, which is the kind of thing that is obvious once and invisible otherwise.

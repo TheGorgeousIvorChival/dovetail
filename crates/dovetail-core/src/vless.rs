@@ -324,6 +324,241 @@ impl VlessLink {
 /// Marshaled `Addons{ Flow: "xtls-rprx-vision" }`: tag `0A`, length `10`, 16 chars.
 const VISION_ADDONS: [u8; 18] = *b"\x0A\x10xtls-rprx-vision";
 
+/// Largest Vision record on the wire: Xray-core's buffer size, padding included.
+const RECORD_CAP: usize = 8192;
+/// Command header plus the 16-byte UUID allowance every clamp reserves.
+const RECORD_OVERHEAD: usize = 21;
+/// Long padding applies below this content length, with this base and span.
+const LONG_MIN: usize = 900;
+const LONG_SPAN: usize = 500;
+/// Short padding draws below this span.
+const SHORT_SPAN: usize = 256;
+
+/// Commands of one Vision padded record; wire values fixed by Xray-core.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum VisionCommand {
+    /// More padded records follow.
+    Continue = 0x00,
+    /// Last padded record; what follows is raw relay.
+    End = 0x01,
+    /// Last padded record; what follows is raw relay with splice allowed.
+    Direct = 0x02,
+}
+
+impl VisionCommand {
+    /// Wire byte to variant; anything else is not a command this layer names.
+    #[must_use]
+    pub fn from_byte(byte: u8) -> Option<Self> {
+        match byte {
+            0x00 => Some(Self::Continue),
+            0x01 => Some(Self::End),
+            0x02 => Some(Self::Direct),
+            _ => None,
+        }
+    }
+
+    /// Wire byte of the variant.
+    #[must_use]
+    pub fn byte(self) -> u8 {
+        self as u8
+    }
+}
+
+/// Bytes of one sealed record without sealing it, so callers size buffers once.
+#[must_use]
+pub fn seal_len(content_len: usize, pad_len: usize, uuid_first: bool) -> usize {
+    (if uuid_first { 16 } else { 0 }) + 5 + content_len + pad_len
+}
+
+/// Sealing side of Vision records: padding lengths drawn from the record layer.
+#[derive(Debug, Clone)]
+pub struct VisionSeal {
+    key: [u8; 32],
+    nonce: [u8; 12],
+    block: u32,
+    pool: [u8; 64],
+    used: usize,
+    uuid: Option<[u8; 16]>,
+}
+
+impl VisionSeal {
+    /// Fresh session; the UUID goes on the first sealed record only, as upstream does.
+    #[must_use]
+    pub fn new(key: &[u8; 32], nonce: &[u8; 12], uuid: &[u8; 16]) -> Self {
+        Self {
+            key: *key,
+            nonce: *nonce,
+            block: 0,
+            pool: [0u8; 64],
+            used: 64,
+            uuid: Some(*uuid),
+        }
+    }
+
+    /// Keystream blocks consumed so far: exactly the draws taken, sixteen to a block.
+    #[must_use]
+    pub fn blocks_used(&self) -> u32 {
+        self.block
+    }
+
+    /// Next word from the pooled keystream, refilling per sixteen draws.
+    fn draw(&mut self) -> u32 {
+        if self.used + 4 > self.pool.len() {
+            let made =
+                crate::record::fill_exact(&self.key, &self.nonce, self.block, &mut self.pool);
+            debug_assert_eq!(made, 1);
+            self.block += 1;
+            self.used = 0;
+        }
+        let word = u32::from_le_bytes([
+            self.pool[self.used],
+            self.pool[self.used + 1],
+            self.pool[self.used + 2],
+            self.pool[self.used + 3],
+        ]);
+        self.used += 4;
+        word
+    }
+
+    /// Length drawn from Xray-core's ranges, deterministic under test key.
+    fn pad_len(&mut self, content_len: usize, long: bool) -> usize {
+        let raw = if long && content_len < LONG_MIN {
+            LONG_MIN + self.draw() as usize % LONG_SPAN - content_len
+        } else {
+            self.draw() as usize % SHORT_SPAN
+        };
+        raw.min(RECORD_CAP - RECORD_OVERHEAD - content_len)
+    }
+
+    /// Seal one record in place: UUID once, command, lengths, content, zero padding.
+    ///
+    /// # Panics
+    ///
+    /// If `out` is short or content exceeds one record, rather than truncating.
+    pub fn seal(
+        &mut self,
+        out: &mut [u8],
+        content: &[u8],
+        command: VisionCommand,
+        long: bool,
+    ) -> usize {
+        assert!(
+            content.len() <= RECORD_CAP - RECORD_OVERHEAD,
+            "vision content exceeds one record"
+        );
+        let pad = self.pad_len(content.len(), long);
+        let uuid_first = self.uuid.is_some();
+        let need = seal_len(content.len(), pad, uuid_first);
+        assert!(out.len() >= need, "vision record buffer too short");
+        let mut o = 0;
+        if let Some(uuid) = self.uuid.take() {
+            out[o..o + 16].copy_from_slice(&uuid);
+            o += 16;
+        }
+        out[o] = command.byte();
+        o += 1;
+        out[o..o + 2].copy_from_slice(&(content.len() as u16).to_be_bytes());
+        o += 2;
+        out[o..o + 2].copy_from_slice(&(pad as u16).to_be_bytes());
+        o += 2;
+        out[o..o + content.len()].copy_from_slice(content);
+        o += content.len();
+        out[o..o + pad].fill(0);
+        o += pad;
+        debug_assert_eq!(o, need);
+        o
+    }
+}
+
+/// Receiving side of Vision records: the unpadding state machine, zero heap.
+#[derive(Debug, Clone)]
+pub struct VisionOpen {
+    id: [u8; 16],
+    command: i32,
+    content: i32,
+    padding: i32,
+    current: u8,
+}
+
+impl VisionOpen {
+    /// Fresh stream: nothing consumed, command block unopened, as Xray-core starts it.
+    #[must_use]
+    pub fn new(id: &[u8; 16]) -> Self {
+        Self {
+            id: *id,
+            command: -1,
+            content: -1,
+            padding: -1,
+            current: 0,
+        }
+    }
+
+    /// Strip one call's framing: UUID once, command blocks, padding skipped.
+    /// A first call shorter than 21 bytes passes through untouched, as upstream does.
+    ///
+    /// Returns content bytes written and the last completed command, if any.
+    /// `out` must hold `buf` (content never exceeds input).
+    ///
+    /// # Panics
+    ///
+    /// If `out` is shorter than `buf`, rather than truncating a record.
+    pub fn open(&mut self, buf: &[u8], out: &mut [u8]) -> (usize, Option<VisionCommand>) {
+        assert!(out.len() >= buf.len(), "vision open buffer too short");
+        let mut pos = 0;
+        let mut written = 0;
+        let mut completed = None;
+        if self.command == -1 && self.content == -1 && self.padding == -1 {
+            if buf.len() >= 21 && buf[..16] == self.id {
+                pos = 16;
+                self.command = 5;
+            } else {
+                out[..buf.len()].copy_from_slice(buf);
+                return (buf.len(), None);
+            }
+        }
+        while pos < buf.len() {
+            if self.command > 0 {
+                let byte = buf[pos];
+                pos += 1;
+                match self.command {
+                    5 => self.current = byte,
+                    4 => self.content = i32::from(byte) << 8,
+                    3 => self.content |= i32::from(byte),
+                    2 => self.padding = i32::from(byte) << 8,
+                    _ => {
+                        self.padding |= i32::from(byte);
+                        completed = VisionCommand::from_byte(self.current);
+                    }
+                }
+                self.command -= 1;
+            } else if self.content > 0 {
+                let n = (self.content as usize).min(buf.len() - pos);
+                out[written..written + n].copy_from_slice(&buf[pos..pos + n]);
+                written += n;
+                pos += n;
+                self.content -= i32::try_from(n).expect("record chunk fits i32");
+            } else {
+                let n = (self.padding as usize).min(buf.len() - pos);
+                pos += n;
+                self.padding -= i32::try_from(n).expect("record chunk fits i32");
+            }
+            if self.command <= 0 && self.content <= 0 && self.padding <= 0 {
+                if self.current == 0 {
+                    self.command = 5;
+                } else {
+                    self.command = -1;
+                    self.content = -1;
+                    self.padding = -1;
+                    out[written..written + buf.len() - pos].copy_from_slice(&buf[pos..]);
+                    written += buf.len() - pos;
+                    break;
+                }
+            }
+        }
+        (written, completed)
+    }
+}
+
 fn planned_reason(link: &VlessLink) -> &'static str {
     match link.transport_kind() {
         TransportKind::Tcp => match link.security() {
@@ -635,5 +870,208 @@ mod tests {
                 .unwrap_err(),
             VlessError::Port
         );
+    }
+
+    const SEAL_KEY: [u8; 32] = [0x5au8; 32];
+    const SEAL_NONCE: [u8; 12] = [0xa7u8; 12];
+    const SEAL_UUID: [u8; 16] = [0xabu8; 16];
+
+    /// Gate fields fresh: upstream keeps the last command across a reset, so
+    /// whole-state equality would fail a correct mirror right after End.
+    fn is_fresh(open: &VisionOpen) -> bool {
+        open.command == -1 && open.content == -1 && open.padding == -1
+    }
+
+    /// The draw a fresh session takes first, from an independent `fill_exact` call.
+    fn first_draw() -> u32 {
+        let mut scratch = [0u8; 64];
+        crate::record::fill_exact(&SEAL_KEY, &SEAL_NONCE, 0, &mut scratch);
+        u32::from_le_bytes([scratch[0], scratch[1], scratch[2], scratch[3]])
+    }
+
+    #[test]
+    fn seal_structure_matches_the_format() {
+        // Fixed session key, so draws are deterministic: the padding length is
+        // asserted against an independent fill_exact draw, never against itself.
+        let mut seal = VisionSeal::new(&SEAL_KEY, &SEAL_NONCE, &SEAL_UUID);
+        let content = b"abc";
+        let pad = (first_draw() as usize % SHORT_SPAN).min(RECORD_CAP - RECORD_OVERHEAD - 3);
+        let mut out = vec![0u8; seal_len(content.len(), pad, true)];
+        let n = seal.seal(&mut out, content, VisionCommand::End, false);
+        assert_eq!(n, out.len());
+        assert_eq!(&out[..16], &SEAL_UUID);
+        assert_eq!(out[16], 0x01);
+        assert_eq!(&out[17..19], &[0x00, 0x03]);
+        assert_eq!(&out[19..21], &(pad as u16).to_be_bytes());
+        assert_eq!(&out[21..24], b"abc");
+        assert!(out[24..].iter().all(|&b| b == 0));
+        assert_eq!(seal.blocks_used(), 1);
+        // UUID goes on the first record only; later seals start at the command.
+        let mut out2 = vec![0u8; 512];
+        let n2 = seal.seal(&mut out2, content, VisionCommand::Continue, false);
+        assert_eq!(out2[0], 0x00);
+        assert_eq!(n2, seal_len(content.len(), n2 - 5 - content.len(), false));
+    }
+
+    #[test]
+    fn seal_open_round_trips_every_length() {
+        // Lengths across every boundary the clamp and the header care about.
+        for &len in &[
+            0usize, 1, 15, 16, 17, 63, 64, 65, 255, 256, 899, 900, 901, 4096, 8171,
+        ] {
+            for &long in &[false, true] {
+                for command in [
+                    VisionCommand::Continue,
+                    VisionCommand::End,
+                    VisionCommand::Direct,
+                ] {
+                    let mut seal = VisionSeal::new(&SEAL_KEY, &SEAL_NONCE, &SEAL_UUID);
+                    let mut open = VisionOpen::new(&SEAL_UUID);
+                    let content: Vec<u8> = (0..len).map(|i| (i % 251) as u8).collect();
+                    let mut sealed = vec![0u8; seal_len(len, 8192, true)];
+                    let n = seal.seal(&mut sealed, &content, command, long);
+                    assert!(n <= RECORD_CAP, "len {len}: sealed record exceeds the cap");
+                    let mut plain = vec![0u8; n];
+                    let (written, completed) = open.open(&sealed[..n], &mut plain);
+                    assert_eq!(&plain[..written], &content[..], "len {len}: round trip");
+                    assert_eq!(completed, Some(command), "len {len}: command reported");
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn open_accepts_hand_built_records() {
+        // Bytes authored from the format, never from this encoder: UUID, two
+        // Continue blocks, then content the seal below never produced.
+        let id = [0x11u8; 16];
+        let mut buf = Vec::new();
+        buf.extend_from_slice(&id);
+        buf.extend_from_slice(&[0x00, 0x00, 0x02, 0x00, 0x01]);
+        buf.extend_from_slice(b"hi");
+        buf.push(0x00);
+        buf.extend_from_slice(&[0x00, 0x00, 0x01, 0x00, 0x00]);
+        buf.extend_from_slice(b"!");
+        let mut open = VisionOpen::new(&id);
+        let mut out = vec![0u8; buf.len()];
+        let (written, completed) = open.open(&buf, &mut out);
+        assert_eq!(&out[..written], b"hi!");
+        assert_eq!(completed, Some(VisionCommand::Continue));
+        // End block with trailing raw bytes: raw appended, state reset.
+        let mut buf2 = Vec::new();
+        buf2.extend_from_slice(&id);
+        buf2.extend_from_slice(&[0x01, 0x00, 0x01, 0x00, 0x02, b'z', 0x00, 0x00]);
+        buf2.extend_from_slice(b"RAW");
+        let mut open2 = VisionOpen::new(&id);
+        let mut out2 = vec![0u8; buf2.len()];
+        let (written2, completed2) = open2.open(&buf2, &mut out2);
+        assert_eq!(&out2[..written2], b"zRAW");
+        assert_eq!(completed2, Some(VisionCommand::End));
+        assert!(is_fresh(&open2));
+        // After the reset the stream is raw: no UUID, everything passes through.
+        let (written3, completed3) = open2.open(b"more", &mut out2);
+        assert_eq!(&out2[..written3], b"more");
+        assert_eq!(completed3, None);
+    }
+
+    #[test]
+    fn open_mirrors_the_passthrough_quirks() {
+        // No UUID prefix: the whole buffer passes through untouched.
+        let id = [0x11u8; 16];
+        let mut open = VisionOpen::new(&id);
+        let mut out = vec![0u8; 20];
+        let (written, completed) = open.open(b"0123456789abcdef0123", &mut out);
+        assert_eq!(&out[..written], b"0123456789abcdef0123");
+        assert_eq!(completed, None);
+        // Short first read, even UUID-prefixed: passthrough, as upstream does.
+        let mut short = Vec::new();
+        short.extend_from_slice(&id[..10]);
+        let mut open2 = VisionOpen::new(&id);
+        let mut out2 = vec![0u8; 10];
+        let (written2, completed2) = open2.open(&short, &mut out2);
+        assert_eq!(&out2[..written2], &short[..]);
+        assert_eq!(completed2, None);
+        // Unknown command resets like End and Direct, but reports nothing.
+        let mut buf = Vec::new();
+        buf.extend_from_slice(&id);
+        buf.extend_from_slice(&[0x07, 0x00, 0x01, 0x00, 0x00, b'q']);
+        let mut open3 = VisionOpen::new(&id);
+        let mut out3 = vec![0u8; buf.len()];
+        let (written3, completed3) = open3.open(&buf, &mut out3);
+        assert_eq!(&out3[..written3], b"q");
+        assert_eq!(completed3, None);
+        assert!(is_fresh(&open3));
+    }
+
+    #[test]
+    fn open_split_feeds_match_whole_feeds() {
+        // TCP splits anywhere, including mid-header; below 21 bytes the first
+        // piece passes through untouched instead, exactly as upstream does it.
+        let id = [0x22u8; 16];
+        let content: Vec<u8> = (0..300).map(|i| (i % 251) as u8).collect();
+        let mut seal = VisionSeal::new(&SEAL_KEY, &SEAL_NONCE, &id);
+        let mut sealed = vec![0u8; seal_len(content.len(), 8192, true)];
+        let n = seal.seal(&mut sealed, &content, VisionCommand::Continue, true);
+        for chunk in 1..9 {
+            let mut open = VisionOpen::new(&id);
+            let mut got = Vec::new();
+            for piece in sealed[..n].chunks(chunk) {
+                let mut out = vec![0u8; piece.len()];
+                let (written, _) = open.open(piece, &mut out);
+                got.extend_from_slice(&out[..written]);
+            }
+            assert_eq!(
+                got,
+                sealed[..n],
+                "chunk {chunk}: short first read passes through"
+            );
+        }
+        for chunk in [21, 22, 30] {
+            let mut open = VisionOpen::new(&id);
+            let mut got = Vec::new();
+            let mut last = None;
+            for piece in sealed[..n].chunks(chunk) {
+                let mut out = vec![0u8; piece.len()];
+                let (written, completed) = open.open(piece, &mut out);
+                got.extend_from_slice(&out[..written]);
+                if completed.is_some() {
+                    last = completed;
+                }
+            }
+            assert_eq!(got, content, "chunk {chunk}: split feed");
+            assert_eq!(
+                last,
+                Some(VisionCommand::Continue),
+                "chunk {chunk}: command"
+            );
+        }
+    }
+
+    #[test]
+    fn blocks_are_exactly_the_draws_taken() {
+        // One draw per seal, sixteen draws per block: a forgotten advance reads 0.
+        let mut seal = VisionSeal::new(&SEAL_KEY, &SEAL_NONCE, &SEAL_UUID);
+        let mut out = vec![0u8; 512];
+        seal.seal(&mut out, b"x", VisionCommand::Continue, false);
+        assert_eq!(seal.blocks_used(), 1);
+        for _ in 0..15 {
+            seal.seal(&mut out, b"x", VisionCommand::Continue, false);
+        }
+        assert_eq!(seal.blocks_used(), 1);
+        seal.seal(&mut out, b"x", VisionCommand::Continue, false);
+        assert_eq!(seal.blocks_used(), 2);
+    }
+
+    #[test]
+    fn seal_len_is_exact() {
+        // Callers size buffers once from this; off-by-one here is a panic there.
+        let mut seal = VisionSeal::new(&SEAL_KEY, &SEAL_NONCE, &SEAL_UUID);
+        for &(len, uuid_first) in &[(0usize, true), (1, false), (64, false), (8171, false)] {
+            let mut out = vec![0u8; seal_len(len, 8192, uuid_first)];
+            let content = vec![0xabu8; len];
+            let n = seal.seal(&mut out, &content, VisionCommand::End, true);
+            let base = if uuid_first { 16 } else { 0 } + 5 + len;
+            assert_eq!(n, seal_len(len, n - base, uuid_first));
+        }
     }
 }
