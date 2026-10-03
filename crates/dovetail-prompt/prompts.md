@@ -710,7 +710,7 @@ Teach `dovetail-zeronet` the two remaining `HTTP`-family carriers P19 measured f
 ## P29 · Wire the xray-rust seam once REALITY dials
 
 **When to use:** When P15's `reality`/`vision` rung carries a record, which is the only thing the `xray-rust` suite exercises that this binary cannot yet do.
-**Status:** todo
+**Status:** done
 **Leverage:** 3
 **Effort:** medium
 **Gates:** CI: `conformance.yml` green with the seam-injected run against `dovetail-zeronet`, and the log line naming the binary and the pin
