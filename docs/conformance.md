@@ -48,7 +48,7 @@ Two of twelve have a seam. Both require a **server** role — `zray_client_to_xr
 | sing-box crypto | `c9922979` | ❌ false | no seam; and no `_test.go` under `protocol/shadowsocks` or `protocol/vless` to run |
 | amneziawg-go noise | `b5928efb` | ❌ false | no seam; `device/*_test.go` are in-process and the TUN path needs root |
 | amnezia-client crypto | `94b51df2` | ❌ false | no seam; C++/Qt, test material is Conan-installed |
-| xray-rust | `7a4fb2dd` | ❌ false | seam `XRAY_VLESS_FULL_BINARY` exists; needs a VLESS **server** subcommand and `x25519` |
+| xray-rust | `7a4fb2dd` | ✅ true | seam `XRAY_VLESS_FULL_BINARY` exists; runs the plain-`TCP` `VLESS` server trio (`rust_socks_client_reaches_echo_server_through_local_xray_vless_tcp`, `rust_round_robin_balancer_uses_each_local_xray_vless_member`, `rust_two_hop_proxy_chain_reaches_echo_through_local_xray_vless_servers`) against `dovetail-zeronet`, checked by `conformance.yml`; the `TLS`/`Vision`/`REALITY` seven need P6/P15 rungs |
 | PattNG (v2rayNG fork) | `ad6f747c` | ❌ false | no seam; Android/Gradle, and the unsafe rows need `UnsafeOptIn` first |
 | ZeroNet / Zray | `97a99734` | ✅ true | seam `ZRAY_XRAY_BINARY` exists; runs the raw-`TCP` `VLESS`, `trojan` and `shadowsocks` plus `VLESS`-over-`WebSocket`, `HTTPUpgrade` and `gRPC` subset against `dovetail-zeronet`, checked by `conformance.yml` |
 | mqvpn MASQUE/MP-QUIC | `b11a2f69` | ❌ false | no seam; `ctest` plus netns E2E need root and a live server pair |
