@@ -17,7 +17,7 @@
 # Each source carries `test_enabled`: whether its test suite runs against
 # Dovetail binaries in CI yet (see `docs/conformance.md`). Suites are NEVER
 # copied here — sing-box is GPL-3.0, Xray-core/xray-rust are MPL-2.0, PattNG is
-# GPL-3.0 — they run unmodified from the pinned commit. A suite flips to
+# GPL-3.0, Aether is AGPL-3.0 — they run unmodified from the pinned commit. A suite flips to
 # `test_enabled = true` only when its transport rung is implemented and its
 # differential proof is green; until then CI creates the job, skips it, and
 # prints the reason, so the gap is named rather than silent.
@@ -101,3 +101,48 @@ suite         = "cargo test -p zero-runtime --test xray_oracle -- --ignored --te
 dovetail_binary = "dovetail-zeronet"
 seam           = "ZRAY_XRAY_BINARY"
 note          = "MIT-licensed Zray core + TUI + Android app; dovetail-zeronet builds the same app surface on dovetail-core. Enabled as the raw-TCP VLESS, trojan and shadowsocks subset (P19, P24, P26); the other six oracle tests need rungs this binary closes on, and stay disabled by name in docs/conformance.md"
+
+[sources.mqvpn]
+repo          = "https://github.com/mp0rta/mqvpn"
+rev           = "b11a2f69b0864d9df199ac653e2d7767c6b679d3"
+default_branch = "main"
+path          = "src"
+test_enabled  = false
+dovetail_binary = ""
+note          = "MASQUE CONNECT-IP (RFC 9484) over Multipath QUIC; WLB/minrtt/backup_fec schedulers, hybrid TCP lane, reorder + reinjection; Apache-2.0"
+
+[sources.aether]
+repo          = "https://github.com/CluvexStudio/Aether"
+rev           = "21e7150ac2225caa01cbb96ac572b5c0cc1e1dc2"
+default_branch = "main"
+path          = "aether"
+test_enabled  = false
+dovetail_binary = ""
+note          = "open-source Rust WARP core (AGPL-3.0): MASQUE over HTTP/3 and HTTP/2, WireGuard, nested gool/mim, Tor x3, upstream chaining; the source PattNG vendors as libaether.so"
+
+[sources.zeptun]
+repo          = "https://github.com/Noisemux/zeptun"
+rev           = "5620e57cdbf1a4464567a404adbff7cffd9b4bb9"
+default_branch = "main"
+path          = "src"
+test_enabled  = false
+dovetail_binary = ""
+note          = "Zig tun2socks engine (MIT): TUN to TCP/UDP/ICMP via SOCKS5/direct/passthrough, fake-IP DNS, offloads, io_uring/epoll/kqueue/IOCP"
+
+[sources.slipstream]
+repo          = "https://github.com/EndPositive/slipstream"
+rev           = "397850b16e70a52513269134b2c7b9aa13a56745"
+default_branch = "main"
+path          = "src"
+test_enabled  = false
+dovetail_binary = ""
+note          = "DNS covert channel over QUIC multipath (picoquic); TCP-over-DNS via base32/TXT, multi-resolver parallel + direct port-53 mode; Apache-2.0"
+
+[sources.quiche]
+repo          = "https://github.com/cloudflare/quiche"
+rev           = "3fc9bc1c5d47757df20f80f78aa8efa912897d34"
+default_branch = "master"
+path          = "quiche"
+test_enabled  = false
+dovetail_binary = ""
+note          = "Cloudflare QUIC + HTTP/3 stack (BSD-2.0); the default QUIC for MASQUE/H3 rungs — never a preference, always the measured choice"
