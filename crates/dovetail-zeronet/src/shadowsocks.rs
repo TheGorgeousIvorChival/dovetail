@@ -25,33 +25,24 @@ const READ_CHUNK: usize = 0x4000;
 
 /// Serve one `shadowsocks` connection: salt, address chunk, dial, relay sealed.
 pub(crate) fn serve(mut stream: TcpStream, password: &str, method: &str, freedom: bool) {
-    trace("accept");
     if method != "aes-256-gcm" || !freedom {
-        trace("refuse method-or-freedom");
         return;
     }
     let master = master_key(password);
     let mut salt = [0u8; SALT_LEN];
     if read_exact(&mut stream, &mut salt).is_err() {
-        trace("no peer salt");
         return;
     }
-    trace("peer salt read");
     let Some(mut recv) = Cipher::new(&master, &salt) else {
         return;
     };
     let Some(first) = open_chunk(&mut stream, &mut recv) else {
-        trace("no first chunk");
         return;
     };
-    trace(&format!("first chunk {} bytes", first.len()));
     let Some((target, used)) = parse_addr_header(&first) else {
-        trace("no target header");
         return;
     };
-    trace(&format!("dial {target}"));
     let Ok(mut uplink) = TcpStream::connect_timeout(&target, Duration::from_secs(8)) else {
-        trace("dial failed");
         return;
     };
     if uplink.write_all(&first[used..]).is_err() {
@@ -67,15 +58,7 @@ pub(crate) fn serve(mut stream: TcpStream, password: &str, method: &str, freedom
     if stream.write_all(&salt).is_err() {
         return;
     }
-    trace("relay starts");
     pump_relay(&uplink, &stream, send, Recv::Ready(Box::new(recv)));
-}
-
-/// Stderr line when `DOVETAIL_TRACE` is set, silence otherwise.
-fn trace(message: &str) {
-    if std::env::var_os("DOVETAIL_TRACE").is_some() {
-        eprintln!("dovetail-ss: {message}");
-    }
 }
 
 /// Dial a `shadowsocks` server for a target: salt and sealed address, no waiting.
@@ -92,13 +75,11 @@ pub(crate) fn client_send_handshake(
     let mut salt = [0u8; SALT_LEN];
     getrandom::getrandom(&mut salt).ok()?;
     uplink.write_all(&salt).ok()?;
-    trace("client salt sent");
     let mut send = Cipher::new(&master, &salt)?;
     let mut addr = Vec::with_capacity(20);
     push_addr(&mut addr, target, 4);
     addr.extend_from_slice(&target.port().to_be_bytes());
     seal_all(&mut send, &addr, uplink).ok()?;
-    trace("client addr sent");
     Some((send, Recv::Waiting(master)))
 }
 
@@ -132,16 +113,13 @@ pub(crate) fn pump_relay(plain: &TcpStream, sealed: &TcpStream, send: Cipher, re
     let done = thread::spawn(move || {
         let mut buf = vec![0u8; READ_CHUNK];
         while let Ok(read) = plain_read.read(&mut buf) {
-            trace(&format!("plain->sealed {read} bytes"));
             if read == 0 {
                 break;
             }
             if seal_all(&mut send, &buf[..read], &mut sealed_write).is_err() {
-                trace("seal failed");
                 break;
             }
         }
-        trace("plain->sealed ended");
         let _ = plain_read.shutdown(Shutdown::Both);
         let _ = sealed_write.shutdown(Shutdown::Both);
     });
@@ -150,10 +128,8 @@ pub(crate) fn pump_relay(plain: &TcpStream, sealed: &TcpStream, send: Cipher, re
         Recv::Waiting(master) => {
             let mut peer = [0u8; SALT_LEN];
             if read_exact(&mut sealed_read, &mut peer).is_err() {
-                trace("no server salt");
                 return;
             }
-            trace("server salt read");
             let Some(cipher) = Cipher::new(&master, &peer) else {
                 return;
             };
@@ -161,12 +137,10 @@ pub(crate) fn pump_relay(plain: &TcpStream, sealed: &TcpStream, send: Cipher, re
         }
     };
     while let Some(chunk) = open_chunk(&mut sealed_read, &mut recv) {
-        trace(&format!("sealed->plain {} bytes", chunk.len()));
         if plain_write.write_all(&chunk).is_err() {
             break;
         }
     }
-    trace("sealed->plain ended");
     let _ = sealed_read.shutdown(Shutdown::Both);
     let _ = plain_write.shutdown(Shutdown::Both);
     let _ = done.join();

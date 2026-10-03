@@ -131,7 +131,7 @@ Verdict vocabulary, and nothing else:
 
 | claim | checked by | verdict |
 | --- | --- | --- |
-| "running upstream suites **against Dovetail binaries** in CI" | `zeronet` points its suite at `dovetail-zeronet` via `ZRAY_XRAY_BINARY`; six entries are `test_enabled = false` and skip | green for the 2-test subset — the doc says 1 of 7 suites and names the seven excluded oracle tests with what each got instead of a listener |
+| "running upstream suites **against Dovetail binaries** in CI" | `zeronet` points its suite at `dovetail-zeronet` via `ZRAY_XRAY_BINARY`; six entries are `test_enabled = false` and skip | green for the 3-test subset — the doc says 1 of 7 suites and names the six excluded oracle tests with what each got instead of a listener |
 | `test_enabled = true` means the suite runs on every push | `conformance.yml` → `run-upstream-suite.sh`, run 37101365980: `RUNNING: zeronet …`, then `PASS: zeronet suite green against dovetail-zeronet` | green, and the log line names the binary and the pin |
 | `test_enabled = false` means the job is created, skips, and prints the reason | the same log: six `SKIPPED:` lines, each naming the pin | green |
 | a suite flips to `true` only when the benchmark gate is green on all four ISA runners | `zeronet` is `true` as the P19 differential subset without a benchmark gate behind it | **exception, named** — P19's own gate authorizes the flip and the pin note says so; the general rule still holds for every other entry |
