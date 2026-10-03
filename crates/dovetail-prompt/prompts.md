@@ -20,7 +20,7 @@ Every prompt carries these lines, and `check` fails if one is missing, because a
 | `**Random weight:**` | no | 0-9, for `--rotate`; 0 excludes it from draws, absent means 1 |
 | `**Prompt protocol:**` | no | a rule that applies to this slice alone, layered under the shared protocol |
 
-Paths under `upstream/<name>/` are pinned reading copies for agents (see P3): `xray-core`, `sing-box`, `amneziawg-go`, `amnezia-client`, `xray-rust`, `pattng`, `zeronet`. They never appear in `**Touches:**` — checkouts are derived artifacts, and a touch naming one fails the gate wherever it was never fetched.
+Paths under `upstream/<name>/` are pinned reading copies for agents (see P3): `xray-core`, `sing-box`, `amneziawg-go`, `amnezia-client`, `xray-rust`, `pattng`, `zeronet`, `mqvpn`, `aether`, `zeptun`, `slipstream`, `quiche`. They never appear in `**Touches:**` — checkouts are derived artifacts, and a touch naming one fails the gate wherever it was never fetched.
 
 Placeholders are `{name}` or `{name=default}`. A name with a default is filled by it. A name without one is a decision this tool refuses to invent: `next` prints the exact command to run and exits 2 rather than sending an agent a prompt with a hole in it, and `--allow-unfilled` renders the hole loudly at the top of the prompt instead of silently.
 
@@ -721,6 +721,27 @@ Teach `dovetail-zeronet` the two remaining `HTTP`-family carriers P19 measured f
 ```text
 Flip the `xray-rust` pin to `test_enabled = true` with `dovetail_binary = "dovetail-zeronet"` and the suite command its interop tests need, injected via `XRAY_VLESS_FULL_BINARY` — the seam the pinned tree already reads. The binary already answers `run -config`; what was missing was the `REALITY` behavior P15 owns, so this slice contains no transport code, only the flip and the per-test report by name. A subset that passes is a subset.
 ```
+
+## P30 · Implement one README connection method end to end
+
+**When to use:** When exactly one unchecked row of the README connection-methods matrix is the next box to check, and the point is the whole box — both roles, the proof, the gate, the flipped cell — not a first half of it.
+**Status:** todo
+**Leverage:** 5
+**Effort:** large
+**Gates:** `cargo test --workspace`; CI: `conformance.yml` green with the row's upstream suites executed unmodified against the Dovetail binary plus the extra differential tests below, and the README cell flipped with the run that backs it
+**Depends on:** P19
+**Touches:** crates/dovetail-zeronet/src/proxy.rs, upstream/pins.toml, docs/conformance.md, README.md
+**Random weight:** 2
+
+```text
+Pick exactly one unchecked row from the README connection-methods matrix and check its box completely: every role the method has, following the P19 pattern of enabling only the suite names that pass unmodified. Read each pinned implementation that already supports the row, plus the read-only learnings the row names, then rewrite — no upstream line or test enters this tree.
+
+Prove it twice: first with the other projects' own suites run unmodified from their pins against the Dovetail binary (`run-upstream-suite.sh`, seam-injected where the pin has one), then with more tests of your own that those suites do not cover — framing goldens, sweeps over lengths and offsets, negative tests that refuse malformed input, and a benchmark gate on every ISA runner. An oracle green with no differential of your own is half a proof and does not flip the cell.
+
+Land as one method only: the row, its proof, its gate, the suite flip in `upstream/pins.toml`, and the README cell with the run that backs it. Chaining two methods is a different slice and does not ride along here.
+```
+
+**Add-on — one-row:** If the row needs a second method to be testable (a carrier for a protocol, a TUN for a relay), record that as a new prompt section rather than widening this one.
 
 ## Reading this file as a roadmap
 
