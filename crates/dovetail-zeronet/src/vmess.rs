@@ -1331,9 +1331,9 @@ mod tests {
         )
         .expect("fresh");
         flow.counter = u16::MAX;
-        let mut sealed = Vec::new();
+        let mut sealed = vec![0xAAu8; 4];
         assert!(!flow.seal_onto(b"ping", &mut sealed));
-        assert!(sealed.is_empty());
+        assert_eq!(sealed, [0xAAu8; 4]);
         assert!(flow.open_chunk(&mut sealed).is_none());
     }
 
@@ -1437,7 +1437,7 @@ mod tests {
         header.extend_from_slice(&fnv1a(&header).to_be_bytes());
         let (got, _send, _recv, prefix) = decode_header(&header).expect("decodes");
         assert_eq!(got, target);
-        assert!(!prefix.is_empty());
+        assert_eq!(prefix.len(), 38);
         let mut bad = header.clone();
         bad[0] = 2;
         assert!(decode_header(&bad).is_none());
