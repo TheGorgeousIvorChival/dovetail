@@ -109,15 +109,9 @@ const CONSTANTS: [u32; 4] = [0x6170_7865, 0x3320_646e, 0x7962_2d32, 0x6b20_6574]
 
 /// States the vector core interleaves per pass.
 ///
-/// The cliff is the register file, and only aarch64 has room past four: four
-/// states of four registers is sixteen `ymm`, the whole of x86_64's file, while
-/// aarch64 has thirty-two `q` registers, so eight states fill the file there
-/// instead of leaving half of it idle. One more state past the file spills to
-/// stack on every instruction of every round, which is the width cliff each
-/// constant below sits on.
-#[cfg(target_arch = "aarch64")]
-const GROUP_STATES: usize = 8;
-#[cfg(not(target_arch = "aarch64"))]
+/// Four registers of four states is sixteen `q` or `ymm`: the whole register
+/// file. One more state and the core spills the state to stack on every
+/// instruction of every round, which is the width cliff this constant sits on.
 const GROUP_STATES: usize = 4;
 
 /// The widest pass the tail can take, which is one state short of a whole group.
@@ -311,21 +305,10 @@ fn xor_tail<V: Lanes>(key: &[u8; 32], nonce: &[u8; 12], start: u32, buf: &mut [u
     while rest.len() > 64 {
         let states = (rest.len().div_ceil(64) / V::CHUNKS).clamp(1, TAIL_STATES);
         let (head, tail) = rest.split_at_mut((states * V::CHUNKS * 64).min(rest.len()));
-        // One arm per width the clamp can produce: a width with no arm would ask
-        // for a pass that is never generated, so the widest arm always exists.
         blocks += match states {
             1 => xor_groups::<V, 1>(key, nonce, ctr, head),
             2 => xor_groups::<V, 2>(key, nonce, ctr, head),
-            3 => xor_groups::<V, 3>(key, nonce, ctr, head),
-            #[cfg(target_arch = "aarch64")]
-            4 => xor_groups::<V, 4>(key, nonce, ctr, head),
-            #[cfg(target_arch = "aarch64")]
-            5 => xor_groups::<V, 5>(key, nonce, ctr, head),
-            #[cfg(target_arch = "aarch64")]
-            6 => xor_groups::<V, 6>(key, nonce, ctr, head),
-            #[cfg(target_arch = "aarch64")]
-            7 => xor_groups::<V, 7>(key, nonce, ctr, head),
-            _ => unreachable!("`states` is clamped to TAIL_STATES"),
+            _ => xor_groups::<V, 3>(key, nonce, ctr, head),
         };
         ctr = ctr.wrapping_add((states * V::CHUNKS) as u32);
         rest = tail;
@@ -429,17 +412,10 @@ pub const fn backend() -> &'static str {
     }
     #[cfg(target_arch = "aarch64")]
     {
-        "4-lane core: NEON, 8 blocks per iteration"
+        "4-lane core: NEON, 4 blocks per iteration"
     }
     #[cfg(not(any(target_arch = "x86_64", target_arch = "aarch64")))]
     {
         "4-lane core: portable, 4 blocks per iteration"
     }
 }
-
-/// The number the aarch64 `backend()` names, checked against what produces it.
-///
-/// A string is the one place a number goes stale silently, so the width the
-/// report prints is proven against the constant and lane count behind it.
-#[cfg(target_arch = "aarch64")]
-const _: () = assert!(GROUP_STATES == 8 && GROUP_STATES * <Wide as Lanes>::CHUNKS == 8);

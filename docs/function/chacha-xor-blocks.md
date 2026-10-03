@@ -53,7 +53,7 @@ One ChaCha20 chain is a dependent add-xor-rotate chain with nothing to overlap. 
 | backend | lanes | states in flight | blocks per iteration | registers |
 | --- | --- | --- | --- | --- |
 | portable | 4 (`[u32; 4]`) | 4 | 4 | 16 arrays |
-| NEON (aarch64) | 4 (`uint32x4_t`) | 8 | 8 | 32 `q` registers |
+| NEON (aarch64) | 4 (`uint32x4_t`) | 4 | 4 | 16 `q` registers |
 | SSE2 (x86_64) | 4 (`__m128i`) | 1 | 1 | 4 `xmm` registers |
 | AVX2 (x86_64) | 8 (`__m256i`) | 8 | 8 | 16 `ymm` registers |
 
@@ -86,7 +86,7 @@ graph TD
     M --> N["done"]
 ```
 
-The group is `GROUP_STATES` states — 4 on x86_64, 8 on aarch64 — which is `GROUP_STATES x CHUNKS` blocks: 8 on AVX2 and on NEON, 4 on the portable core. It is a constant rather than something the caller asks about, and the x86_64 probe is hoisted out of the loop so the whole ladder runs inside one `#[target_feature]` function instead of re-checking CPUID per group.
+The group is `GROUP_STATES = 4` states, which is `4 x CHUNKS` blocks: 8 on AVX2, 4 on NEON and on the portable core. It is a constant rather than something the caller asks about, and the x86_64 probe is hoisted out of the loop so the whole ladder runs inside one `#[target_feature]` function instead of re-checking CPUID per group.
 
 The tail is the part that was wrong for a long time. It used to fall out of the group loop one block at a time through the scalar core, so every length that was not a whole multiple of the group ran its last one to seven blocks on the slowest code in the tree while the vector core — 1.86x the reference on aarch64 — sat idle. The tail now runs the widest vector pass that covers the blocks that are left without overshooting, and a single block goes to `one_block`: on aarch64 the portable scalar core, because a single block is one dependency chain with nothing to interleave and the scalar core measures faster than NEON for it (91.9 ns against 119.7 ns for the same block on the same machine); on x86_64 `sse2`, because LLVM compiles the portable core there to scalar `movl` and the scalar block cost a five-block buffer 0.86x while the four-block pass in the same call measured 1.9x.
 
