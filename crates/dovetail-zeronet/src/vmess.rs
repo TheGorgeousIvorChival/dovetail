@@ -242,18 +242,48 @@ fn chacha_key(key: &[u8; 16]) -> [u8; 32] {
     out
 }
 
-/// `IEEE CRC-32`, bit at a time; auth ids are twelve bytes so this never matters.
-fn crc32(data: &[u8]) -> u32 {
-    let mut crc = !0u32;
-    for &byte in data {
-        crc ^= u32::from(byte);
-        for _ in 0..8 {
+/// Entry `i` is what eight bit-steps of the reflected polynomial do to `i`.
+///
+/// Built at compile time by the same eight bit-steps the old loop ran, so the
+/// table is not a description of `CRC-32` — it *is* the old loop, folded. The
+/// reflected polynomial `0xedb8_8320` and the `!0` seed and `!` finish are the
+/// same three values, so the checksum over a given twelve bytes is the same
+/// `u32` as before, and `crc32_matches_the_bit_at_a_time_loop` is what checks it.
+const fn crc_table() -> [u32; 256] {
+    let mut table = [0u32; 256];
+    let mut i = 0usize;
+    while i < 256 {
+        let mut crc = i as u32;
+        let mut bit = 0;
+        while bit < 8 {
             crc = if crc & 1 == 1 {
                 (crc >> 1) ^ 0xedb8_8320
             } else {
                 crc >> 1
             };
+            bit += 1;
         }
+        table[i] = crc;
+        i += 1;
+    }
+    table
+}
+
+/// The eight bit-steps, once each, as data.
+const CRC_TABLE: [u32; 256] = crc_table();
+
+/// `IEEE CRC-32`, one byte at a time through [`CRC_TABLE`].
+///
+/// The bit-at-a-time form this replaces was eight iterations of a branch and a
+/// shift per byte, and it ran twice per request — once to seal the auth id and
+/// once to check it — over twelve bytes, so ninety-six unpredictable branches for
+/// a checksum the table answers in twelve loads. The auth id is small, so this is
+/// not a throughput path; it is on the per-request path, and ninety-six branches
+/// there is a misprediction every time.
+fn crc32(data: &[u8]) -> u32 {
+    let mut crc = !0u32;
+    for &byte in data {
+        crc = (crc >> 8) ^ CRC_TABLE[((crc ^ u32::from(byte)) & 0xff) as usize];
     }
     !crc
 }
@@ -702,7 +732,7 @@ fn request_bytes(uuid: &[u8; 16], cipher: Cipher, target: &SocketAddr) -> Option
 }
 
 /// Read one sealed length plus its padding draws.
-fn read_wire_len(stream: &mut TcpStream, shake: Option<&mut Shake>) -> Option<(usize, usize)> {
+fn read_wire_len(stream: &mut dyn Read, shake: Option<&mut Shake>) -> Option<(usize, usize)> {
     let mut prefix = [0u8; 2];
     read_exact(stream, &mut prefix).ok()?;
     let wire = u16::from_be_bytes(prefix);
@@ -717,12 +747,29 @@ fn read_wire_len(stream: &mut TcpStream, shake: Option<&mut Shake>) -> Option<(u
 }
 
 /// Write one data frame carrying `plain`.
-fn write_frame(stream: &mut TcpStream, send: &mut Flow, plain: &[u8]) -> bool {
-    let mut sealed = Vec::with_capacity(plain.len() + TAG_LEN + 64);
-    if !send.seal_onto(plain, &mut sealed) {
+///
+/// `staging` is the caller's buffer, reused across frames: this used to build a
+/// fresh `Vec` per frame, so every 8 KB frame cost one allocation on the way out
+/// as well as on the way in. The `AEAD` interface encrypts *in place*, so the
+/// plaintext still has to be laid down in a buffer the cipher owns — that copy is
+/// the interface's, not this function's — but it is now a copy into a warm buffer
+/// rather than a copy into a cold one.
+///
+/// `noise` is the same idea for the padding: a frame carries up to 63 random
+/// trailing bytes, and they were a fresh allocation each time to hold bytes nobody
+/// reads.
+fn write_frame(
+    stream: &mut dyn Write,
+    send: &mut Flow,
+    plain: &[u8],
+    staging: &mut Vec<u8>,
+    noise: &mut [u8; 64],
+) -> bool {
+    staging.clear();
+    if !send.seal_onto(plain, staging) {
         return false;
     }
-    let encrypted = sealed.len();
+    let encrypted = staging.len();
     let padding = send.shake.as_mut().map_or(0, |s| usize::from(s.pad_len()));
     let total = encrypted + padding;
     if total > u16::MAX as usize {
@@ -735,28 +782,57 @@ fn write_frame(stream: &mut TcpStream, send: &mut Flow, plain: &[u8]) -> bool {
     if stream.write_all(&wire.to_be_bytes()).is_err() {
         return false;
     }
-    if stream.write_all(&sealed).is_err() {
+    if stream.write_all(staging).is_err() {
         return false;
     }
     if padding > 0 {
-        let mut noise = vec![0u8; padding];
-        if !random_into(&mut noise) {
+        if !random_into(&mut noise[..padding]) {
             return false;
         }
-        if stream.write_all(&noise).is_err() {
+        if stream.write_all(&noise[..padding]).is_err() {
             return false;
         }
     }
     true
 }
 
-/// Read one data frame, returning its plaintext or `None` on error.
-fn read_frame(stream: &mut TcpStream, recv: &mut Flow) -> Option<Vec<u8>> {
+/// Read one data frame into `scratch`, returning its plaintext length.
+///
+/// This is the hot read of the protocol and it used to do three things per frame
+/// that no frame needed. It allocated a zeroed buffer of the frame's length — a
+/// full-length memset of bytes that the very next `read_exact` overwrites
+/// wholesale, so on an 8 KB frame eight kilobytes were written twice. It then
+/// decrypted in place into that buffer and *allocated a second buffer and copied
+/// the plaintext out of it*, so the plaintext was moved once for no reason. And a
+/// padding-only frame allocated a third, to hold bytes it was about to discard.
+///
+/// `scratch` is the caller's, reused: after the first frame at a given length
+/// there is no allocation and no memset. The resize is the only memset left and it
+/// runs only when a frame is longer than every frame before it.
+///
+/// The return is a *borrow of `scratch`*, which is the part that matters: a
+/// function that returns `&'a [u8]` tied to `&'a mut Vec<u8>` cannot also have
+/// copied the plaintext somewhere, because there is nowhere to return it from. The
+/// copy that used to be here was not caught by a test asserting on buffer
+/// identity — it was caught by changing the return type, which is what a claim
+/// worth making should look like.
+fn read_frame<'a>(
+    stream: &mut dyn Read,
+    recv: &mut Flow,
+    scratch: &'a mut Vec<u8>,
+) -> Option<&'a [u8]> {
     let (total, padding) = read_wire_len(stream, recv.shake.as_mut())?;
     if total <= padding {
-        let mut discard = vec![0u8; total];
-        read_exact(stream, &mut discard).ok()?;
-        return Some(Vec::new());
+        // Padding with no payload: read it to stay in step and keep none of it.
+        let mut discard = [0u8; 64];
+        let mut left = total;
+        while left > 0 {
+            let take = left.min(discard.len());
+            read_exact(stream, &mut discard[..take]).ok()?;
+            left -= take;
+        }
+        scratch.clear();
+        return Some(&scratch[..0]);
     }
     if total - padding
         < match recv.cipher {
@@ -766,14 +842,13 @@ fn read_frame(stream: &mut TcpStream, recv: &mut Flow) -> Option<Vec<u8>> {
     {
         return None;
     }
-    let mut wire = vec![0u8; total];
-    read_exact(stream, &mut wire).ok()?;
-    let payload = total - padding;
-    let plain_len = recv.open_chunk(&mut wire[..payload])?;
-    if plain_len == 0 {
-        return Some(Vec::new());
+    if scratch.len() < total {
+        scratch.resize(total, 0);
     }
-    Some(wire[..plain_len].to_vec())
+    read_exact(stream, &mut scratch[..total]).ok()?;
+    let payload = total - padding;
+    let len = recv.open_chunk(&mut scratch[..payload])?;
+    Some(&scratch[..len])
 }
 
 /// Client session: both directions plus the response keys to consume.
@@ -964,16 +1039,27 @@ pub(crate) fn pump_relay(
     let mut send = send;
     let done = thread::spawn(move || {
         let mut buf = vec![0u8; MAX_PLAIN];
+        // Both of these outlive the loop on purpose: one frame's staging buffer
+        // and one frame's padding buffer are enough for every frame this
+        // connection sends, and the largest of them is bounded by `MAX_PLAIN`.
+        let mut staging = Vec::with_capacity(MAX_PLAIN + TAG_LEN);
+        let mut noise = [0u8; 64];
         while let Ok(read) = plain_read.read(&mut buf) {
             if read == 0 {
-                let _ = write_frame(&mut sealed_write, &mut send, &[]);
+                let _ = write_frame(&mut sealed_write, &mut send, &[], &mut staging, &mut noise);
                 break;
             }
             let mut at = 0;
             let mut ok = true;
             while at < read {
                 let end = (at + MAX_PLAIN).min(read);
-                if !write_frame(&mut sealed_write, &mut send, &buf[at..end]) {
+                if !write_frame(
+                    &mut sealed_write,
+                    &mut send,
+                    &buf[at..end],
+                    &mut staging,
+                    &mut noise,
+                ) {
                     ok = false;
                     break;
                 }
@@ -995,15 +1081,12 @@ pub(crate) fn pump_relay(
             return;
         }
     }
-    loop {
-        match read_frame(&mut sealed_read, &mut recv) {
-            Some(chunk) if chunk.is_empty() => break,
-            Some(chunk) => {
-                if plain_write.write_all(&chunk).is_err() {
-                    break;
-                }
-            }
-            None => break,
+    // One buffer for every frame this connection receives, decrypted where it
+    // lands and written straight out from there.
+    let mut scratch = Vec::with_capacity(MAX_PLAIN + TAG_LEN + 64);
+    while let Some(chunk) = read_frame(&mut sealed_read, &mut recv, &mut scratch) {
+        if chunk.is_empty() || plain_write.write_all(chunk).is_err() {
+            break;
         }
     }
     let _ = sealed_read.shutdown(Shutdown::Both);
@@ -1057,11 +1140,142 @@ mod tests {
         let port = listener.local_addr().expect("addr").port();
         let writer = thread::spawn(move || {
             let (mut stream, _) = listener.accept().expect("accepts");
-            read_frame(&mut stream, &mut recv).expect("reads")
+            let mut scratch = Vec::new();
+            let chunk = read_frame(&mut stream, &mut recv, &mut scratch).expect("reads");
+            chunk.to_vec()
         });
         let mut reader = TcpStream::connect(("127.0.0.1", port)).expect("connects");
-        assert!(write_frame(&mut reader, &mut send, b"ping"));
+        let mut staging = Vec::new();
+        let mut noise = [0u8; 64];
+        assert!(write_frame(
+            &mut reader,
+            &mut send,
+            b"ping",
+            &mut staging,
+            &mut noise
+        ));
         assert_eq!(writer.join().expect("joins"), b"ping");
+    }
+
+    /// The table and the loop it replaced have to agree, and agreeing with each
+    /// other is not enough: both would be wrong together if the polynomial were
+    /// mistyped once. So every one of the 256 entries is reached, several lengths
+    /// are compared against the loop, and the published check value is asserted.
+    #[test]
+    fn crc32_is_the_bit_at_a_time_loop_folded() {
+        fn bit_at_a_time(data: &[u8]) -> u32 {
+            let mut crc = !0u32;
+            for &byte in data {
+                crc ^= u32::from(byte);
+                for _ in 0..8 {
+                    crc = if crc & 1 == 1 {
+                        (crc >> 1) ^ 0xedb8_8320
+                    } else {
+                        crc >> 1
+                    };
+                }
+            }
+            !crc
+        }
+
+        for a in 0..=255u8 {
+            assert_eq!(crc32(&[a]), bit_at_a_time(&[a]), "single byte {a}");
+        }
+        for len in 0..=40usize {
+            let data: Vec<u8> = (0..len)
+                .map(|i| (i as u8).wrapping_mul(97).wrapping_add(13))
+                .collect();
+            assert_eq!(crc32(&data), bit_at_a_time(&data), "length {len}");
+        }
+        // The published `CRC-32` check value: the table is this polynomial, not
+        // merely the one the old loop happened to implement.
+        assert_eq!(crc32(b"123456789"), 0xcbf4_3926);
+    }
+
+    /// Neither frame path may allocate, and neither may hand back a copy.
+    ///
+    /// Both buffers are the caller's, pre-sized the way `pump_relay` sizes them,
+    /// and both keep the same address and the same capacity for every frame of a
+    /// run. A frame that allocated would move one of them; a frame that copied the
+    /// plaintext out would move the other, because the length returned would not
+    /// be the length of the caller's own bytes. This is the deterministic half of
+    /// the claim: it is the same on every machine, where a duration is not.
+    #[test]
+    fn frames_reuse_the_callers_buffers() {
+        let cipher = Cipher::Chacha;
+        let key = [0x77u8; 16];
+        let iv = [0x88u8; 16];
+        let options = OPT_STREAM | OPT_MASK | OPT_PAD;
+        let mut send = Flow::fresh(cipher, &key, &iv, options, &iv).expect("sends");
+        let mut recv = Flow::fresh(cipher, &key, &iv, options, &iv).expect("recvs");
+        // Ascending, and every length below the pre-sized capacity, so no frame
+        // asks the buffer to grow — a grow is a reallocation by another name and
+        // this test is about the frames, not about `Vec`.
+        let lens = [1usize, 4, 63, 64, 65, 512, 1500, 4096];
+        let payloads: Vec<Vec<u8>> = lens
+            .iter()
+            .map(|n| {
+                (0..*n)
+                    .map(|i| (i as u8).wrapping_mul(31).wrapping_add(7))
+                    .collect()
+            })
+            .collect();
+
+        let listener = TcpListener::bind("127.0.0.1:0").expect("binds");
+        let port = listener.local_addr().expect("addr").port();
+        let reader = thread::spawn(move || {
+            let (mut stream, _) = listener.accept().expect("accepts");
+            let mut scratch = Vec::with_capacity(MAX_PLAIN + TAG_LEN + 64);
+            let addr = scratch.as_ptr() as usize;
+            let cap = scratch.capacity();
+            let mut got = Vec::new();
+            for want in &lens {
+                // Read the addresses *before* the call: while `chunk` is alive the
+                // borrow checker will not let this test look at `scratch` at all,
+                // which is the design working, not the test working around it.
+                let was_at = scratch.as_ptr() as usize;
+                let had = scratch.capacity();
+                let chunk = read_frame(&mut stream, &mut recv, &mut scratch).expect("reads");
+                assert_eq!(chunk.len(), *want, "plaintext length");
+                assert_eq!(
+                    chunk.as_ptr() as usize,
+                    was_at,
+                    "the plaintext was copied out of the caller's buffer"
+                );
+                assert_eq!(was_at, addr, "the read buffer moved: read_frame allocated");
+                assert_eq!(had, cap, "the read buffer grew: read_frame allocated");
+                got.extend_from_slice(chunk);
+            }
+            got
+        });
+
+        let mut uplink = TcpStream::connect(("127.0.0.1", port)).expect("connects");
+        let mut staging = Vec::with_capacity(MAX_PLAIN + TAG_LEN);
+        let mut noise = [0u8; 64];
+        let addr = staging.as_ptr() as usize;
+        let cap = staging.capacity();
+        let mut want = Vec::new();
+        for plain in &payloads {
+            assert!(write_frame(
+                &mut uplink,
+                &mut send,
+                plain,
+                &mut staging,
+                &mut noise
+            ));
+            assert_eq!(
+                staging.as_ptr() as usize,
+                addr,
+                "the write buffer moved: write_frame allocated"
+            );
+            assert_eq!(
+                staging.capacity(),
+                cap,
+                "the write buffer grew: write_frame allocated"
+            );
+            want.extend_from_slice(plain);
+        }
+        assert_eq!(reader.join().expect("joins"), want);
     }
 
     #[test]
@@ -1152,8 +1366,17 @@ mod tests {
             &response_iv,
             auth
         ));
-        assert!(write_frame(&mut uplink, &mut send, b"ping"));
-        let back = read_frame(&mut uplink, &mut recv).expect("reads");
+        let mut staging = Vec::new();
+        let mut noise = [0u8; 64];
+        assert!(write_frame(
+            &mut uplink,
+            &mut send,
+            b"ping",
+            &mut staging,
+            &mut noise
+        ));
+        let mut scratch = Vec::new();
+        let back = read_frame(&mut uplink, &mut recv, &mut scratch).expect("reads");
         assert_eq!(back, b"ping");
     }
 
@@ -1267,8 +1490,10 @@ mod tests {
                     Flow::fresh(cipher, &[0x55u8; 16], &[0x66u8; 16], options, &[0x66u8; 16])
                         .expect("recvs");
                 let mut all = Vec::new();
+                let mut scratch = Vec::new();
                 for _ in &lens {
-                    all.extend_from_slice(&read_frame(&mut stream, &mut recv).expect("reads"));
+                    let chunk = read_frame(&mut stream, &mut recv, &mut scratch).expect("reads");
+                    all.extend_from_slice(chunk);
                 }
                 all
             });
@@ -1277,8 +1502,16 @@ mod tests {
                 Flow::fresh(cipher, &[0x55u8; 16], &[0x66u8; 16], options, &[0x66u8; 16])
                     .expect("sends");
             let mut want = Vec::new();
+            let mut staging = Vec::new();
+            let mut noise = [0u8; 64];
             for plain in &payloads {
-                assert!(write_frame(&mut uplink, &mut send, plain));
+                assert!(write_frame(
+                    &mut uplink,
+                    &mut send,
+                    plain,
+                    &mut staging,
+                    &mut noise
+                ));
                 want.extend_from_slice(plain);
             }
             assert_eq!(writer.join().expect("joins"), want);
